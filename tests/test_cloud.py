@@ -210,6 +210,14 @@ def test_protection_default_is_confirm_not_deny() -> None:
     assert ProtectionRules().mode is ProtectionMode.CONFIRM
 
 
+def test_config_defaults_protect_production() -> None:
+    from wai.config import Config
+
+    protected = Config().cloud.protected
+    rules = ProtectionRules.build(protected.patterns, protected.accounts, protected.mode)
+    assert rules.matches(CloudTarget("k8s", "AKS_EU_PROD")), "out-of-the-box protection"
+
+
 def test_target_renders_the_blast_radius() -> None:
     target = CloudTarget("k8s", "prod-eu", "cluster-1", "payments")
     assert target.render() == "k8s: prod-eu · cluster-1 · payments"
@@ -315,6 +323,20 @@ def test_missing_integration_is_reported_not_crashed(monkeypatch: pytest.MonkeyP
     absent = Integration("nope", "nope", ("definitely_not_a_module",), "Nothing")
     assert absent.available is False
     assert "wai[nope]" in absent.install_hint
+
+
+def test_auth_status_never_needs_the_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opening the auth panel must not cost four cloud round trips."""
+    import socket
+
+    from wai.cloud.auth import all_status
+
+    def blocked(*args: object, **kwargs: object) -> None:
+        raise AssertionError("status() made a network call")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    statuses = all_status()
+    assert {s.cloud for s in statuses} == {"k8s", "aws", "azure", "gcp"}
 
 
 def test_name_value_pairs_redact_the_value_not_the_label() -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -55,6 +57,39 @@ class Profile(BaseModel):
     system: str | None = None
 
 
+class ProtectedSettings(BaseModel):
+    """Targets too important to change on a single keypress."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patterns: list[str] = Field(default_factory=lambda: ["*prod*", "*production*"])
+    """Matched case-insensitively against context, cluster, region and namespace."""
+    accounts: list[str] = Field(default_factory=list)
+    mode: Literal["confirm", "deny"] = "confirm"
+
+
+class CloudSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secret_redaction: bool = True
+    """Scrub secret material from tool output before it reaches the model.
+
+    Tool results are transmitted to the active LLM provider, so turning this
+    off means Kubernetes Secrets and AWS session tokens leave your machine.
+    """
+    kubeconfigs: list[str] = Field(default_factory=list)
+    """Extra kubeconfig files, added with /kube add."""
+    kube_context: str | None = None
+    """The context WAI uses. Never written back to ~/.kube/config."""
+    default_region: str | None = None
+    dry_run_first: bool = True
+    cli_fallback: bool = True
+    cli_allowlist: list[str] = Field(
+        default_factory=lambda: ["kubectl", "aws", "az", "gcloud", "helm", "terraform"]
+    )
+    protected: ProtectedSettings = Field(default_factory=ProtectedSettings)
+
+
 class UISettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,6 +116,7 @@ class Config(BaseModel):
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
+    cloud: CloudSettings = Field(default_factory=CloudSettings)
     ui: UISettings = Field(default_factory=UISettings)
 
     def provider_settings(self, name: str) -> ProviderSettings:

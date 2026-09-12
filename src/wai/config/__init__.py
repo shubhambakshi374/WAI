@@ -10,6 +10,7 @@ from wai.config.loader import (
     write_starter_config,
 )
 from wai.config.models import (
+    CloudSettings,
     Config,
     Profile,
     ProviderSettings,
@@ -19,6 +20,7 @@ from wai.config.models import (
 )
 
 __all__ = [
+    "CloudSettings",
     "Config",
     "Profile",
     "ProviderSettings",
