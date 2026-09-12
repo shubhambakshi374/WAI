@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-from wai.core.types import ChatRequest, Message, Role, Usage, new_id
+from wai.core.types import ChatRequest, Message, Role, ToolDef, Usage, new_id
 
 
 def _now() -> datetime:
@@ -21,6 +21,9 @@ class Session(BaseModel):
     provider: str = ""
     model: str = ""
     system: str | None = None
+    workspace_root: str = ""
+    """Persisted so --resume reconstructs the same workspace."""
+    tools_enabled: bool = True
     max_tokens: int = 4096
     temperature: float | None = None
     messages: list[Message] = Field(default_factory=list)
@@ -36,13 +39,14 @@ class Session(BaseModel):
         self.usage = self.usage + usage
         self.updated_at = _now()
 
-    def to_request(self) -> ChatRequest:
+    def to_request(self, tools: list[ToolDef] | None = None) -> ChatRequest:
         return ChatRequest(
             model=self.model,
             messages=list(self.messages),
             system=self.system,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
+            tools=list(tools or []),
         )
 
     @staticmethod

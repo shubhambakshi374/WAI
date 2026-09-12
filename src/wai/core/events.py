@@ -77,6 +77,40 @@ class StreamError(BaseModel):
     retryable: bool = False
 
 
+class ToolStarted(BaseModel):
+    type: Literal["tool_started"] = "tool_started"
+    id: str
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolFinished(BaseModel):
+    type: Literal["tool_finished"] = "tool_finished"
+    id: str
+    name: str
+    summary: str = ""
+    is_error: bool = False
+    duration_ms: int = 0
+
+
+class ToolDenied(BaseModel):
+    """Reserved for the Phase 3 approval gate. Nothing emits it yet."""
+
+    type: Literal["tool_denied"] = "tool_denied"
+    id: str
+    name: str
+    reason: str = ""
+
+
+class IterationEnd(BaseModel):
+    """One pass of the agent loop finished: inference plus any tool calls."""
+
+    type: Literal["iteration_end"] = "iteration_end"
+    index: int
+    tool_calls: int = 0
+    final: bool = False
+
+
 StreamEvent = Annotated[
     MessageStart
     | TextDelta
@@ -89,3 +123,25 @@ StreamEvent = Annotated[
     | StreamError,
     Field(discriminator="type"),
 ]
+"""What a provider adapter emits. This is the provider-normalization contract
+and must stay exactly as it is."""
+
+
+AgentEvent = Annotated[
+    MessageStart
+    | TextDelta
+    | ReasoningDelta
+    | ToolCallStart
+    | ToolCallDelta
+    | ToolCallEnd
+    | UsageUpdate
+    | MessageEnd
+    | StreamError
+    | ToolStarted
+    | ToolFinished
+    | ToolDenied
+    | IterationEnd,
+    Field(discriminator="type"),
+]
+"""What the agent loop emits: every StreamEvent, plus tool execution and loop
+lifecycle. Front ends and the Phase 2 engine consume this wider union."""
