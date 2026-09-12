@@ -4,9 +4,9 @@ A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
-> **Status: Phase 1.5.** Streaming chat across all eight providers, plus
-> read-only filesystem tools driven by an agent loop. No writes and no shell
-> yet.
+> **Status: Phase 1.75.** Streaming chat across all eight providers, plus
+> filesystem tools driven by an agent loop --- reads are free, and every
+> change asks first. No shell execution yet.
 
 ## Install
 
@@ -68,15 +68,57 @@ The workspace is also the Phase 2 primitive: a flow will construct one and
 hand the same instance to every step, which is why it lives in
 `wai/workspace.py` rather than inside the tools.
 
-| Tool | What it does |
-|---|---|
-| `read_file` | Line-numbered read with `offset`/`limit`. Refuses binaries. |
-| `list_dir` | Directory contents, directories first. |
-| `glob` | Find files by pattern, newest first. |
-| `grep` | Regex content search. Uses `rg` when installed, else pure Python. |
+| Tool | What it does | |
+|---|---|---|
+| `read_file` | Line-numbered read with `offset`/`limit`. Refuses binaries. | read-only |
+| `list_dir` | Directory contents, directories first. | read-only |
+| `glob` | Find files by pattern, newest first. | read-only |
+| `grep` | Regex content search. Uses `rg` when installed, else pure Python. | read-only |
+| `write_file` | Create a file, or replace one wholesale. | **asks first** |
+| `edit_file` | Replace an exact string. Refuses an ambiguous match. | **asks first** |
+| `delete_path` | Delete a file, or a directory with `recursive`. | **asks first** |
 
 `.gitignore` is honoured and `.git` is always skipped, so the model sees your
 source rather than `node_modules`.
+
+### Changes always ask first
+
+Nothing is written before you say yes. Each change opens a prompt showing the
+**actual unified diff** --- approving a change you cannot see is not consent ---
+plus whether git could get the file back:
+
+```
+EDIT — approval required
+src/wai/core/retry.py
+tracked by git and unmodified — recoverable with git checkout
+
+  @@ -12,7 +12,7 @@
+  -    base: float = 0.5,
+  +    base: float = 1.0,
+
+              [ Reject (n) ]  [ Always allow edit_file (a) ]  [ Approve (y) ]
+```
+
+Reject is focused by default, so Enter takes the safe option. "Always allow"
+is scoped to **one tool**, lives in memory for **one session**, is never
+written to disk, and is shown in the status bar the whole time it is active.
+
+`edit_file` requires `old_string` to match exactly once, so an ambiguous edit
+is refused rather than guessed at. `write_file` is for new files and full
+rewrites; the model is told to prefer `edit_file`, which keeps diffs small and
+reviewable.
+
+Headless runs cannot prompt, so `wai chat --once` **refuses changes** unless
+you pass `--yes`:
+
+```bash
+wai chat --once "bump the version" --yes
+```
+
+Writes additionally refuse anything inside `.git`, and the same secret
+denylist applies --- so the model cannot create a `.env` either. Files are
+written atomically (temp file, then rename), so an interrupted write leaves
+the original intact.
 
 ### What it will not read
 
@@ -163,6 +205,7 @@ completes, so an interrupted run never loses history.
 | `Ctrl+J` | newline |
 | `Ctrl+P` | switch model |
 | `Ctrl+N` | new session |
+| `y` / `n` / `a` | at an approval prompt: approve, reject, always allow that tool |
 | `Ctrl+C` | cancel the stream |
 | `Ctrl+Q` | quit |
 
@@ -209,8 +252,9 @@ Snapshot tests render the TUI to SVG and will churn when Textual is upgraded:
 
 - **Phase 1 — skeleton and chat.** ✅ Eight providers, streaming TUI, sessions, BYOK config.
 - **Phase 1.5 — the workspace and read-only tools.** ✅ Agent loop, `read_file`/`list_dir`/`glob`/`grep`, sandboxed.
+- **Phase 1.75 — writes behind an approval gate.** ✅ `write_file`/`edit_file`/`delete_path`, diff-first prompts.
 - **Phase 2 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
-- **Phase 3+ —** writes and shell behind an approval gate, then the software factory built on the workflow engine.
+- **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
 
 ## License
 
