@@ -25,12 +25,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wai.core.events import AgentEvent, IterationEnd, ToolFinished, ToolStarted
+from wai.core.events import (
+    AgentEvent,
+    IterationEnd,
+    ToolDenied,
+    ToolFinished,
+    ToolStarted,
+)
 from wai.core.session import Session
 from wai.core.types import Message, Role, StopReason, ToolResultBlock, ToolUseBlock
 from wai.providers.base import Provider
 from wai.runner import TurnAccumulator, stream_turn
-from wai.tools.base import ToolContext
+from wai.tools.approval import ApprovalPolicy, DenyAll
+from wai.tools.base import ToolContext, ToolOutcome
 from wai.tools.registry import ToolRegistry
 from wai.workspace import Workspace
 
@@ -67,6 +74,7 @@ def build_system_prompt(session: Session, registry: ToolRegistry) -> str | None:
 class _Batch:
     blocks: list[ToolResultBlock] = field(default_factory=list)
     finished: list[ToolFinished] = field(default_factory=list)
+    denied: list[ToolDenied] = field(default_factory=list)
 
 
 async def run_agent(
@@ -117,6 +125,8 @@ async def run_agent(
             session.append(_results_message(_cancelled_results(pending)))
             raise
 
+        for denied in batch.denied:
+            yield denied
         for finished in batch.finished:
             yield finished
 
@@ -147,27 +157,49 @@ async def _execute_all(
     ctx: ToolContext,
     output_budget: int,
 ) -> _Batch:
-    """Run every requested call concurrently. Read-only, so order is free."""
-    began = time.monotonic()
-    outcomes = await asyncio.gather(
-        *(registry.execute(call.name, call.input, ctx) for call in calls)
-    )
-    elapsed = int((time.monotonic() - began) * 1000)
+    """Read-only calls run concurrently; mutating ones run one at a time.
+
+    Two edits to the same file would otherwise race on read-modify-write, and
+    two approval prompts would race to reach the screen. Order within the
+    turn is preserved either way, so results still line up with the calls.
+    """
+    outcomes: dict[int, ToolOutcome] = {}
+    timings: dict[int, int] = {}
+    concurrent = [(i, c) for i, c in enumerate(calls) if registry.is_read_only(c.name)]
+    sequential = [(i, c) for i, c in enumerate(calls) if not registry.is_read_only(c.name)]
+
+    if concurrent:
+        began = time.monotonic()
+        results = await asyncio.gather(
+            *(registry.execute(c.name, c.input, ctx) for _, c in concurrent)
+        )
+        elapsed = int((time.monotonic() - began) * 1000)
+        for (index, _), outcome in zip(concurrent, results, strict=True):
+            outcomes[index] = outcome
+            timings[index] = elapsed
+
+    for index, call in sequential:
+        began = time.monotonic()
+        outcomes[index] = await registry.execute(call.name, call.input, ctx)
+        timings[index] = int((time.monotonic() - began) * 1000)
 
     batch = _Batch()
     remaining = output_budget
-    for call, outcome in zip(calls, outcomes, strict=True):
+    for index, call in enumerate(calls):
+        outcome = outcomes[index]
         content, remaining = _clip(outcome.content, remaining)
         batch.blocks.append(
             ToolResultBlock(tool_use_id=call.id, content=content, is_error=outcome.is_error)
         )
+        if outcome.denied:
+            batch.denied.append(ToolDenied(id=call.id, name=call.name, reason=outcome.content))
         batch.finished.append(
             ToolFinished(
                 id=call.id,
                 name=call.name,
                 summary=outcome.summary,
                 is_error=outcome.is_error,
-                duration_ms=elapsed,
+                duration_ms=timings[index],
             )
         )
     return batch
@@ -235,5 +267,12 @@ def build_workspace(
     )
 
 
-def build_tool_context(config: Config, workspace: Workspace) -> ToolContext:
-    return ToolContext(workspace=workspace, max_file_bytes=config.tools.max_file_bytes)
+def build_tool_context(
+    config: Config, workspace: Workspace, *, approvals: ApprovalPolicy | None = None
+) -> ToolContext:
+    """Defaults to DenyAll, so a caller that forgets a policy cannot write."""
+    return ToolContext(
+        workspace=workspace,
+        approvals=approvals or DenyAll(),
+        max_file_bytes=config.tools.max_file_bytes,
+    )
