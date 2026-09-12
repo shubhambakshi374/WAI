@@ -28,6 +28,7 @@ from wai.core.events import (
     UsageUpdate,
 )
 from wai.core.types import Message, Role, Usage
+from wai.tui.commands import dispatch, is_command
 from wai.tui.widgets.composer import Composer
 from wai.tui.widgets.message_list import MessageBubble, MessageList
 from wai.tui.widgets.model_picker import ModelPicker
@@ -88,6 +89,10 @@ class ChatScreen(Screen[None]):
 
     @on(Composer.Submitted)
     async def _on_submit(self, event: Composer.Submitted) -> None:
+        if is_command(event.text):
+            # A leading slash is a command, never a prompt.
+            self.run_command(event.text)
+            return
         if self._turn_active:
             self.notify("Still working — press Ctrl+C to cancel.", severity="warning")
             return
@@ -96,6 +101,19 @@ class ChatScreen(Screen[None]):
         app.session.append(message)
         await self.query_one(MessageList).add_message(message)
         self.run_turn()
+
+    @work(group="command")
+    async def run_command(self, text: str) -> None:
+        """Commands can await modals, so they run in a worker like turns do."""
+        app = self.wai
+        try:
+            result = await dispatch(app, app.commands, text)
+        except Exception as exc:  # a broken command must not kill the session
+            self.notify(f"Command failed: {exc}", severity="error", timeout=10)
+            return
+        if result.body:
+            await self.query_one(MessageList).add_notice(result.title, result.body, result.severity)
+            self.query_one(MessageList).scroll_end(animate=False)
 
     @work(exclusive=True, group="turn")
     async def run_turn(self) -> None:

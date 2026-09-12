@@ -552,3 +552,154 @@ async def test_modal_focuses_reject_by_default(tmp_path) -> None:  # type: ignor
 
         await pilot.press("escape")
         await _settle(pilot)
+
+
+# --------------------------------------------------------------- slash commands
+
+
+def test_command_detection_ignores_paths() -> None:
+    """`/etc/hosts` in a prompt is a path, not a command."""
+    from wai.tui.commands import is_command
+
+    assert is_command("/help")
+    assert is_command("/kube use AKS_QAM")
+    assert not is_command("/etc/hosts")
+    assert not is_command("/")
+    assert not is_command("what does / mean")
+    assert not is_command("read /var/log/syslog for me")
+
+
+def test_command_parsing_handles_quotes() -> None:
+    from wai.tui.commands import parse
+
+    assert parse("/kube add ~/my config") == ("kube", ["add", "~/my", "config"])
+    assert parse('/kube add "~/my config"') == ("kube", ["add", "~/my config"])
+    assert parse("/HELP") == ("help", [])
+
+
+async def test_unknown_command_is_reported_not_sent_to_the_model() -> None:
+    provider = FakeProvider()
+    app = make_app(provider)
+    async with app.run_test() as pilot:
+        await _send(pilot, "/depoly now")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert provider.calls == [], "a mistyped command must not become a prompt"
+        assert app.session.messages == []
+        rendered = _notices(pilot)
+        assert "Unknown command" in rendered or "depoly" in rendered
+
+
+async def test_help_lists_commands() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/help")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        for expected in ("/provider", "/kube", "/login", "/model"):
+            assert expected in rendered
+
+
+async def test_provider_command_lists_and_marks_current() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/provider")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "anthropic" in rendered and "current" in rendered
+
+
+async def test_kube_command_never_writes_the_kubeconfig(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    kubeconfig = tmp_path / "config"
+    kubeconfig.write_text(
+        "apiVersion: v1\nkind: Config\ncurrent-context: staging\n"
+        "clusters:\n- name: c\n  cluster: {server: https://x}\n"
+        "contexts:\n- name: AKS_EU_PROD\n  context: {cluster: c, user: u}\n"
+        "- name: staging\n  context: {cluster: c, user: u}\n"
+        "users:\n- name: u\n  user: {}\n"
+    )
+    monkeypatch.setenv("KUBECONFIG", str(kubeconfig))
+    before = kubeconfig.read_bytes()
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/kube")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "AKS_EU_PROD" in rendered
+        assert "protected" in rendered, "the prod context must be flagged"
+
+        await _send(pilot, "/kube use staging")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.config.cloud.kube_context == "staging"
+
+    assert kubeconfig.read_bytes() == before, "~/.kube/config must never be written"
+
+
+async def test_login_status_lists_every_cloud() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/login")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        for cloud in ("k8s", "aws", "azure", "gcp"):
+            assert cloud in rendered
+
+
+async def test_login_rejects_an_unknown_cloud() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/login oracle")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "Unknown cloud" in rendered
+
+
+async def test_model_command_switches_directly() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/model claude-opus-5")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.session.model == "claude-opus-5"
+
+
+async def test_key_command_opens_a_masked_prompt() -> None:
+    from wai.tui.widgets.key_prompt import KeyPrompt
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/key openai")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, KeyPrompt):
+                break
+        assert isinstance(pilot.app.screen, KeyPrompt)
+        from textual.widgets import Input
+
+        assert pilot.app.screen.query_one(Input).password is True, "the key must be masked"
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_key_command_refuses_bedrock() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/key bedrock")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "credential chain" in rendered
+
+
+def _notices(pilot) -> str:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.message_list import NoticeBubble
+
+    return "\n".join(n.text for n in pilot.app.screen.query(NoticeBubble))

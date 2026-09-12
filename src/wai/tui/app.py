@@ -6,7 +6,7 @@ from textual.app import App
 
 from wai import __version__
 from wai.agent import build_tool_context, build_workspace
-from wai.config import load_config, resolve_profile, sessions_dir
+from wai.config import load_config, resolve_profile, save_config, sessions_dir
 from wai.config.models import Config
 from wai.core.session import Session
 from wai.core.types import ModelInfo
@@ -15,6 +15,7 @@ from wai.providers.base import BaseProvider
 from wai.storage.sessions import SessionStore
 from wai.tools import ToolContext, ToolRegistry, default_registry
 from wai.tools.approval import AllowAll, SessionApprovals
+from wai.tui.commands import CommandRegistry, build_registry
 from wai.tui.screens.chat import ChatScreen
 from wai.tui.widgets.approval import InteractiveApproval
 
@@ -55,6 +56,7 @@ class WaiApp(App[None]):
             self.config, self.workspace, approvals=self.approvals
         )
         self.tools_enabled = self.config.tools.enabled and not no_tools
+        self.commands: CommandRegistry = build_registry()
         self.store = SessionStore(sessions_dir())
         self.session = self._load_or_create(resume)
         # An injected provider keeps the app testable without any network.
@@ -99,6 +101,41 @@ class WaiApp(App[None]):
         if model.max_output_tokens:
             self.session.max_tokens = min(self.session.max_tokens, model.max_output_tokens)
         self.store.update_header(self.session)
+
+    # ------------------------------------------------ slash-command surface
+
+    async def switch_provider(self, name: str) -> None:
+        """Swap provider, keeping the transcript, and pick a sensible model."""
+        from wai.providers.registry import catalog_for
+
+        if self._injected_provider is None:
+            await self.provider.close()
+            self.provider = create_provider(name, self.config)
+        self.session.provider = name
+        catalog = catalog_for(name)
+        if catalog and not any(m.id == self.session.model for m in catalog):
+            self.session.model = catalog[0].id
+        self.store.update_header(self.session)
+
+    def set_kube_context(self, name: str) -> None:
+        """Record the context for WAI only; ~/.kube/config is never touched."""
+        self.config.cloud.kube_context = name
+        save_config(self.config)
+
+    def add_kubeconfig(self, path: str) -> None:
+        if path not in self.config.cloud.kubeconfigs:
+            self.config.cloud.kubeconfigs.append(path)
+            save_config(self.config)
+
+    def open_model_picker(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            screen.action_pick_model()
+
+    async def new_session_from_command(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            await screen.action_new_session()
 
     def on_mount(self) -> None:
         self.theme = self.config.ui.theme

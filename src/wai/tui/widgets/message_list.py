@@ -68,6 +68,41 @@ class MessageBubble(Static):
         self.add_class("-error")
 
 
+class NoticeBubble(Static):
+    """Output from a slash command. Local to the UI, never sent to the model."""
+
+    DEFAULT_CSS = """
+    NoticeBubble {
+        height: auto;
+        margin: 0 1 1 1;
+        padding: 0 1;
+        border-left: thick $accent;
+        color: $text-muted;
+    }
+    NoticeBubble.-warning { border-left: thick $warning; }
+    NoticeBubble.-error   { border-left: thick $error; }
+    NoticeBubble > .notice-title { text-style: bold; color: $text; }
+    """
+
+    def __init__(self, title: str, body: str, severity: str = "information") -> None:
+        super().__init__()
+        self.title_text = title
+        self.body_text = body
+        self.severity = severity
+        if severity in ("warning", "error"):
+            self.add_class(f"-{severity}")
+
+    def compose(self) -> ComposeResult:
+        if self.title_text:
+            yield Label(self.title_text, classes="notice-title")
+        yield Static(self.body_text, markup=False)
+
+    @property
+    def text(self) -> str:
+        """Title plus body. Composed children are not reachable via render()."""
+        return f"{self.title_text}\n{self.body_text}".strip()
+
+
 class MessageList(VerticalScroll):
     DEFAULT_CSS = """
     MessageList { padding: 1 1 0 1; height: 1fr; }
@@ -81,6 +116,14 @@ class MessageList(VerticalScroll):
         await self.mount(bubble)
         self.scroll_end(animate=False)
         return bubble
+
+    async def add_notice(
+        self, title: str, body: str, severity: str = "information"
+    ) -> NoticeBubble:
+        notice = NoticeBubble(title, body, severity)
+        await self.mount(notice)
+        self.scroll_end(animate=False)
+        return notice
 
     async def add_placeholder(self, role: Role) -> MessageBubble:
         bubble = MessageBubble(role)
