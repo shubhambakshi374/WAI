@@ -9,9 +9,10 @@ model could have recovered from by trying a different path.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
+from wai.tools.approval import ApprovalPolicy, DenyAll
 from wai.workspace import Workspace
 
 DEFAULT_MAX_FILE_BYTES = 256 * 1024
@@ -22,13 +23,14 @@ DEFAULT_MAX_MATCHES = 200
 
 @dataclass
 class ToolContext:
-    """What a tool is allowed to touch.
+    """What a tool is allowed to touch, and what it must ask before doing.
 
-    Phase 3 seam: an approval policy and a cancellation token belong here.
-    Neither is built yet --- every tool in this increment is read-only.
+    ``approvals`` defaults to ``DenyAll``: a caller that forgets to wire a
+    policy gets refusals, not silent writes.
     """
 
     workspace: Workspace
+    approvals: ApprovalPolicy = field(default_factory=DenyAll)
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     max_lines: int = DEFAULT_MAX_LINES
     max_entries: int = DEFAULT_MAX_ENTRIES
@@ -42,10 +44,16 @@ class ToolOutcome:
     content: str
     is_error: bool = False
     summary: str = ""
+    denied: bool = False
+    """True when the user rejected it, as opposed to the tool failing."""
 
     @classmethod
     def error(cls, message: str, *, summary: str = "") -> ToolOutcome:
         return cls(content=message, is_error=True, summary=summary or "failed")
+
+    @classmethod
+    def rejected(cls, message: str) -> ToolOutcome:
+        return cls(content=message, is_error=True, summary="rejected", denied=True)
 
 
 @runtime_checkable
