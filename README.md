@@ -4,9 +4,10 @@ A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
-> **Status: Phase 1.75.** Streaming chat across all eight providers, plus
-> filesystem tools driven by an agent loop --- reads are free, and every
-> change asks first. No shell execution yet.
+> **Status: Phase 2a.** Streaming chat across all eight providers; filesystem
+> tools behind a diff-first approval gate; and the DevOps foundations ---
+> cloud auth, Kubernetes contexts, secret redaction and protected
+> environments. The cloud *tools* themselves land in 2b–2e.
 
 ## Install
 
@@ -145,6 +146,65 @@ enabled = true
 max_iterations = 25
 max_file_bytes = 262144
 ```
+
+## Slash commands
+
+Anything starting with `/` is a command, not a prompt.
+
+| | |
+|---|---|
+| `/help` | List commands |
+| `/provider` · `/provider use <name>` | LLM provider status, or switch |
+| `/key <provider>` · `/key rm <provider>` | Store a key (masked, straight to the OS keyring) |
+| `/model` · `/model <id>` · `/models` | Pick or set a model |
+| `/login` · `/login <cloud>` | Cloud auth status, or sign in |
+| `/kube` · `/kube use <ctx>` · `/kube add <path>` | Kubernetes contexts |
+| `/tools` | Tools, installed integrations, standing approvals |
+| `/new` | Start a fresh session |
+
+`wai login` and `wai kube list|use|add` do the same from the shell.
+
+## Clouds
+
+Optional extras, so you only carry what you use:
+
+```bash
+uv tool install 'wai[k8s]'          # or aws, azure, gcp, all
+```
+
+Uninstalled integrations show up in `/tools` with the command to add them,
+rather than silently not being there.
+
+`/login azure` uses a **device-code flow through `azure-identity`** and works
+with no `az` installed. `/login gcp` needs either `gcloud` or a service-account
+key in `GOOGLE_APPLICATION_CREDENTIALS` — Google has no device-code flow that
+works without a registered client, so there is no way around that.
+
+### Two things it does not do
+
+**It never modifies `~/.kube/config`.** `/kube use` records the context in
+WAI's own config. Changing your global context as a side effect of a chat
+message would silently retarget every other terminal you have open.
+
+**It redacts secrets before the model sees them.** Tool results are transmitted
+to whichever LLM provider is active, so an unredacted Kubernetes Secret would
+put base64 credentials in a third party's logs with no undo. Secret payloads,
+credential-shaped keys, and `{name: API_TOKEN, value: …}` pairs are replaced
+with a visible marker. `[cloud] secret_redaction = false` opts out.
+
+### Protected environments
+
+```toml
+[cloud.protected]
+patterns = ["*prod*", "*production*"]   # matched case-insensitively
+accounts = ["123456789012"]
+mode = "confirm"                        # or "deny"
+```
+
+Matching is case-insensitive on purpose: real clusters are as likely to be
+called `AKS_EU_PROD` as `prod-eu`, and a rule that misses on case is worse
+than no rule. `confirm` will require typing the target's name rather than
+pressing a key.
 
 ## Providers
 
