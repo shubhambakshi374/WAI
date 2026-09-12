@@ -4,9 +4,9 @@ A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
-> **Status: Phase 1.** Streaming chat across all eight providers, with the
-> session, config and provider layers that Phase 2 is built on. No tool
-> execution or agent loop yet.
+> **Status: Phase 1.5.** Streaming chat across all eight providers, plus
+> read-only filesystem tools driven by an agent loop. No writes and no shell
+> yet.
 
 ## Install
 
@@ -35,6 +35,58 @@ Headless, for scripts and CI:
 
 ```bash
 wai chat --once "explain this failing rollout" --model claude-sonnet-5
+```
+
+## The workspace
+
+Every session has a **workspace**: a rooted filesystem context the model can
+read. It defaults to the current directory.
+
+```bash
+wai tools list                                   # what the model can call, and where
+wai chat --once "what does the retry logic do?"  # the model reads the repo to answer
+wai --allow-path /etc/nginx                      # add a root
+wai --no-tools                                   # plain chat
+```
+
+The workspace is also the Phase 2 primitive: a flow will construct one and
+hand the same instance to every step, which is why it lives in
+`wai/workspace.py` rather than inside the tools.
+
+| Tool | What it does |
+|---|---|
+| `read_file` | Line-numbered read with `offset`/`limit`. Refuses binaries. |
+| `list_dir` | Directory contents, directories first. |
+| `glob` | Find files by pattern, newest first. |
+| `grep` | Regex content search. Uses `rg` when installed, else pure Python. |
+
+`.gitignore` is honoured and `.git` is always skipped, so the model sees your
+source rather than `node_modules`.
+
+### What it will not read
+
+Two rules, both enforced in `Workspace.resolve` before anything touches disk:
+
+1. **Nothing outside the workspace.** Symlinks are resolved *before* the
+   containment check, so a link inside the root pointing at `~/.ssh` does not
+   escape it.
+2. **No credential files, even inside the workspace** --- `.env*`, `*.pem`,
+   `*.key`, `id_rsa*`, `.netrc`, `.npmrc`, `.aws/credentials` and similar.
+
+The second rule exists because WAI ships file contents to external model
+providers by design. "Model reads `.env`, quotes it back, key lands in a
+provider's logs" is the most plausible way this tool leaks a credential.
+Refusals are explicit, so the model reports them instead of retrying. Set
+`deny_secrets = false` under `[workspace]` if you genuinely need it off.
+
+```toml
+[workspace]
+extra_roots = ["/etc/nginx"]
+
+[tools]
+enabled = true
+max_iterations = 25
+max_file_bytes = 262144
 ```
 
 ## Providers
@@ -102,15 +154,19 @@ completes, so an interrupted run never loses history.
 ## Architecture
 
 ```
-wai/core        normalized types, the streaming event union, retries
+wai/core        normalized types, the event unions, retries
 wai/providers   one adapter per provider, all folding onto that union
 wai/config      configuration and credential resolution
 wai/storage     JSONL session persistence
-wai/runner      headless turn execution
+wai/workspace   the rooted filesystem context, and its containment rules
+wai/tools       read-only filesystem tools
+wai/runner      one inference call
+wai/agent       the loop: inference, tool execution, repeat
 wai/tui         the Textual front end
 ```
 
-**`wai.core` and `wai.providers` must never import `textual`.** The Phase 2
+**`wai.core`, `wai.providers`, `wai.workspace`, `wai.tools` and `wai.agent`
+must never import `textual`.** The Phase 2
 workflow engine drives providers headlessly; if the provider layer were
 entangled with the UI, Phase 2 would start with a rewrite. `tests/test_layering.py`
 enforces this — if it fails, move the offending code into `wai.tui` rather than
@@ -137,8 +193,9 @@ Snapshot tests render the TUI to SVG and will churn when Textual is upgraded:
 ## Roadmap
 
 - **Phase 1 — skeleton and chat.** ✅ Eight providers, streaming TUI, sessions, BYOK config.
-- **Phase 2 — the workflow designer.** Compose and run multi-step workflows; the reason the layering above is enforced.
-- **Phase 3+ —** tool execution and the agent loop, then the software factory built on the workflow engine.
+- **Phase 1.5 — the workspace and read-only tools.** ✅ Agent loop, `read_file`/`list_dir`/`glob`/`grep`, sandboxed.
+- **Phase 2 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
+- **Phase 3+ —** writes and shell behind an approval gate, then the software factory built on the workflow engine.
 
 ## License
 
