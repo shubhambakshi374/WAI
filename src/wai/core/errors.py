@@ -34,6 +34,23 @@ class CredentialsError(WaiError):
     """No usable credential could be resolved for a provider."""
 
 
+class WorkspaceError(WaiError):
+    """The workspace refused an operation."""
+
+
+class PathNotAllowed(WorkspaceError):
+    """A path resolved outside every allowed root, or onto a denied file."""
+
+    def __init__(self, message: str, *, path: str, reason: str) -> None:
+        super().__init__(message)
+        self.path = path
+        self.reason = reason
+
+
+class ToolError(WaiError):
+    """A tool failed. Surfaced to the model as an error tool_result."""
+
+
 class ProviderError(WaiError):
     """A provider rejected or failed the request."""
 
