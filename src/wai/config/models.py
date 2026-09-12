@@ -22,6 +22,27 @@ class ProviderSettings(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
 
+class WorkspaceSettings(BaseModel):
+    """The filesystem context tools operate in. See wai/workspace.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    extra_roots: list[str] = Field(default_factory=list)
+    """Opt-in paths outside the working directory, e.g. /etc/nginx."""
+    deny_secrets: bool = True
+    """Block credential-shaped files even inside an allowed root."""
+
+
+class ToolSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_iterations: int = 25
+    max_file_bytes: int = 262_144
+    max_output_bytes: int = 102_400
+    """Total tool-result bytes per loop iteration."""
+
+
 class Profile(BaseModel):
     """A named provider + model + sampling combination."""
 
@@ -58,6 +79,8 @@ class Config(BaseModel):
         }
     )
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
+    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
+    tools: ToolSettings = Field(default_factory=ToolSettings)
     ui: UISettings = Field(default_factory=UISettings)
 
     def provider_settings(self, name: str) -> ProviderSettings:
