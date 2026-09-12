@@ -15,7 +15,7 @@ import pytest
 
 import wai
 
-HEADLESS_PACKAGES = ("core", "providers", "config", "storage")
+HEADLESS_PACKAGES = ("core", "providers", "config", "storage", "tools")
 SRC = Path(wai.__file__).parent
 
 
@@ -52,6 +52,12 @@ def test_headless_packages_do_not_import_tui(package: str) -> None:
                 pytest.fail(f"{path.relative_to(SRC)} imports {node.module}")
 
 
-def test_runner_is_headless() -> None:
-    tree = ast.parse((SRC / "runner.py").read_text(encoding="utf-8"))
-    assert "textual" not in _imported_roots(tree)
+HEADLESS_MODULES = ("runner.py", "workspace.py", "agent.py")
+
+
+@pytest.mark.parametrize("module", HEADLESS_MODULES)
+def test_headless_modules_do_not_import_textual(module: str) -> None:
+    path = SRC / module
+    if not path.exists():
+        pytest.skip(f"{module} not built yet")
+    assert "textual" not in _imported_roots(ast.parse(path.read_text(encoding="utf-8")))
