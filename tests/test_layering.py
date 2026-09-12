@@ -50,3 +50,8 @@ def test_headless_packages_do_not_import_tui(package: str) -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("wai.tui"):
                 pytest.fail(f"{path.relative_to(SRC)} imports {node.module}")
+
+
+def test_runner_is_headless() -> None:
+    tree = ast.parse((SRC / "runner.py").read_text(encoding="utf-8"))
+    assert "textual" not in _imported_roots(tree)
