@@ -412,3 +412,143 @@ async def test_no_tools_flag_disables_them() -> None:
         await _settle(pilot)
         assert app.session.tools_enabled is False
         assert provider.calls[0].tools == []
+
+
+# -------------------------------------------------------------------- approval
+
+
+def _write_events(call_id: str = "w1", **args: object):  # type: ignore[no-untyped-def]
+    from wai.core.events import ToolCallEnd, ToolCallStart
+    from wai.core.types import StopReason
+
+    payload = {"path": "note.txt", "content": "hello\n", **args}
+    return [
+        MessageStart(model="fake-1"),
+        ToolCallStart(index=0, id=call_id, name="write_file"),
+        ToolCallEnd(index=0, id=call_id, name="write_file", input=payload),
+        MessageEnd(stop_reason=StopReason.TOOL_USE, usage=Usage(output_tokens=1)),
+    ]
+
+
+class WriteThenTextProvider(FakeProvider):
+    def __init__(self, **args: object) -> None:
+        super().__init__([])
+        self.turn = 0
+        self.args = args
+
+    async def stream(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        self.turn += 1
+        events = _write_events(**self.args) if self.turn == 1 else default_events("Saved.")
+        for event in events:
+            yield event
+
+
+def _app_in(tmp_path, provider, **kw):  # type: ignore[no-untyped-def]
+    config = Config()
+    config.ui.stream_flush_ms = 10
+    return WaiApp(config=config, provider=provider, workspace_root=str(tmp_path), **kw)
+
+
+async def test_write_prompts_and_approval_applies_it(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        # Wait for the modal rather than the worker: the worker is blocked on it.
+        for _ in range(80):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ApprovalModal):
+                break
+        assert isinstance(pilot.app.screen, ApprovalModal)
+        assert "note.txt" in pilot.app.screen.request.path
+
+        await pilot.press("y")
+        await _settle(pilot)
+
+    assert (tmp_path / "note.txt").read_text() == "hello\n"
+
+
+async def test_rejecting_the_prompt_writes_nothing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        for _ in range(80):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ApprovalModal):
+                break
+        await pilot.press("n")
+        await _settle(pilot)
+
+    assert not (tmp_path / "note.txt").exists()
+    assert unanswered_tool_uses(app.session) == []
+
+
+async def test_escape_rejects(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        for _ in range(80):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ApprovalModal):
+                break
+        await pilot.press("escape")
+        await _settle(pilot)
+
+    assert not (tmp_path / "note.txt").exists()
+
+
+async def test_auto_approve_skips_the_prompt(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider(), auto_approve=True)
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        await _settle(pilot)
+        assert not isinstance(pilot.app.screen, ApprovalModal)
+
+    assert (tmp_path / "note.txt").read_text() == "hello\n"
+
+
+async def test_always_allow_is_shown_in_the_status_bar(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A standing grant must never be invisible."""
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        for _ in range(80):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ApprovalModal):
+                break
+        await pilot.press("a")
+        await _settle(pilot)
+
+        assert app.approvals.always_allowed == frozenset({"write_file"})
+        granted = pilot.app.screen.query_one("#status-granted", Label)
+        assert "write_file" in str(granted.render())
+
+
+async def test_modal_focuses_reject_by_default(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Enter should hit the safe option, not the destructive one."""
+    from textual.widgets import Button
+
+    from wai.tui.widgets.approval import ApprovalModal
+
+    app = _app_in(tmp_path, WriteThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "make a note")
+        for _ in range(80):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ApprovalModal):
+                break
+        focused = pilot.app.focused
+        assert isinstance(focused, Button) and focused.id == "reject"
+
+        await pilot.press("escape")
+        await _settle(pilot)

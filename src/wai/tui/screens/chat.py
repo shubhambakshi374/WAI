@@ -22,6 +22,7 @@ from wai.core.events import (
     ReasoningDelta,
     StreamError,
     TextDelta,
+    ToolDenied,
     ToolFinished,
     ToolStarted,
     UsageUpdate,
@@ -136,6 +137,8 @@ class ChatScreen(Screen[None]):
                         await self._add_tool(event)
                     case ToolFinished():
                         self._finish_tool(event)
+                    case ToolDenied():
+                        self.notify(f"Rejected {event.name}.", severity="warning")
                     case UsageUpdate():
                         status.usage = app.session.usage
                     case StreamError():
@@ -181,6 +184,7 @@ class ChatScreen(Screen[None]):
         if status is not None:
             status.usage = app.session.usage
             status.state = "cancelled" if cancelled else "ready"
+            status.granted = ", ".join(sorted(app.approvals.always_allowed))
         self._turn_active = False
         self._close_bubble()
         with contextlib.suppress(NoMatches):

@@ -23,6 +23,7 @@ class StatusBar(Horizontal):
     }
     StatusBar #status-model { width: 1fr; color: $text; text-style: bold; }
     StatusBar #status-usage { width: auto; }
+    StatusBar #status-granted { width: auto; padding-left: 2; color: $warning; }
     StatusBar #status-state { width: auto; padding-left: 2; }
     """
 
@@ -30,12 +31,15 @@ class StatusBar(Horizontal):
     model: reactive[str] = reactive("")
     usage: reactive[Usage] = reactive(Usage, always_update=True)
     state: reactive[str] = reactive("ready")
+    granted: reactive[str] = reactive("")
+    """Tools with a standing session approval. Visible so it is never forgotten."""
 
     def compose(self) -> ComposeResult:
         # Seed from the current values. Watchers fire before compose runs, so
         # relying on them alone leaves the labels blank until first assignment.
         yield Label(self._model_text(), id="status-model")
         yield Label(self._usage_text(), id="status-usage")
+        yield Label(self._granted_text(), id="status-granted")
         yield Label(self.state, id="status-state")
 
     def _model_text(self) -> str:
@@ -60,3 +64,9 @@ class StatusBar(Horizontal):
 
     def watch_state(self) -> None:
         self._set("#status-state", self.state)
+
+    def _granted_text(self) -> str:
+        return f"⚠ auto: {self.granted}" if self.granted else ""
+
+    def watch_granted(self) -> None:
+        self._set("#status-granted", self._granted_text())

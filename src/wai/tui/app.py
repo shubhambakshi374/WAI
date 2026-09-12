@@ -14,7 +14,9 @@ from wai.providers import create_provider
 from wai.providers.base import BaseProvider
 from wai.storage.sessions import SessionStore
 from wai.tools import ToolContext, ToolRegistry, default_registry
+from wai.tools.approval import AllowAll, SessionApprovals
 from wai.tui.screens.chat import ChatScreen
+from wai.tui.widgets.approval import InteractiveApproval
 
 
 class WaiApp(App[None]):
@@ -33,6 +35,7 @@ class WaiApp(App[None]):
         provider_override: str | None = None,
         no_tools: bool = False,
         extra_roots: tuple[str, ...] = (),
+        auto_approve: bool = False,
         config: Config | None = None,
         provider: BaseProvider | None = None,
         workspace_root: str | None = None,
@@ -47,7 +50,10 @@ class WaiApp(App[None]):
         self.profile = profile
         self.workspace = build_workspace(self.config, root=workspace_root, extra_roots=extra_roots)
         self.registry: ToolRegistry = default_registry()
-        self.tool_ctx: ToolContext = build_tool_context(self.config, self.workspace)
+        self.approvals = SessionApprovals(AllowAll() if auto_approve else InteractiveApproval(self))
+        self.tool_ctx: ToolContext = build_tool_context(
+            self.config, self.workspace, approvals=self.approvals
+        )
         self.tools_enabled = self.config.tools.enabled and not no_tools
         self.store = SessionStore(sessions_dir())
         self.session = self._load_or_create(resume)
