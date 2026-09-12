@@ -20,6 +20,7 @@ from wai.config import (
     config_path,
     load_config,
     resolve_profile,
+    save_config,
     sessions_dir,
     write_starter_config,
 )
@@ -49,10 +50,14 @@ config_app = typer.Typer(help="Inspect configuration and manage API keys.")
 providers_app = typer.Typer(help="Inspect providers and their models.")
 sessions_app = typer.Typer(help="Browse saved sessions.")
 tools_app = typer.Typer(help="Inspect the tools the model can call.")
+cloud_app = typer.Typer(help="Cloud authentication and status.")
+kube_app = typer.Typer(help="Kubernetes contexts.")
 app.add_typer(config_app, name="config")
 app.add_typer(providers_app, name="providers")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(tools_app, name="tools")
+app.add_typer(cloud_app, name="cloud")
+app.add_typer(kube_app, name="kube")
 
 
 def _fail(message: str) -> None:
@@ -453,6 +458,95 @@ def tools_list() -> None:
         typer.echo(
             "\ncredential-shaped files (.env, private keys) are blocked inside the workspace"
         )
+
+
+# --------------------------------------------------------------------- cloud
+
+
+@app.command("login")
+def login_cmd(
+    cloud: Annotated[str | None, typer.Argument(help="k8s, aws, azure or gcp.")] = None,
+    profile: Annotated[str | None, typer.Option("--profile", help="AWS profile.")] = None,
+) -> None:
+    """Show cloud auth status, or sign in to one."""
+    from wai.cloud.auth import all_status, login, status
+
+    config = load_config()
+    extra = tuple(config.cloud.kubeconfigs)
+    if cloud is None:
+        for entry in all_status(extra):
+            colour = typer.colors.GREEN if entry.authenticated else typer.colors.YELLOW
+            typer.secho(
+                f"  {entry.cloud:<6} {entry.state:<16} {entry.source:<18} "
+                f"{entry.detail or entry.hint}",
+                fg=colour if entry.available else typer.colors.BRIGHT_BLACK,
+            )
+        return
+
+    current = status(cloud, extra_kubeconfigs=extra)
+    if not current.available:
+        _fail(f"{cloud} support is not installed: {current.hint}")
+    ok, message = asyncio.run(login(cloud, profile=profile))
+    typer.secho(message, fg=typer.colors.GREEN if ok else typer.colors.RED)
+    raise typer.Exit(0 if ok else 1)
+
+
+@cloud_app.command("status")
+def cloud_status() -> None:
+    """Credential status for every cloud. Local only --- no network calls."""
+    login_cmd(cloud=None, profile=None)
+
+
+@kube_app.command("list")
+def kube_list() -> None:
+    """List Kubernetes contexts and mark protected ones."""
+    from wai.cloud.base import ProtectionRules
+    from wai.cloud.kube import list_contexts
+
+    config = load_config()
+    contexts, active = list_contexts(tuple(config.cloud.kubeconfigs))
+    if not contexts:
+        typer.echo("no kubeconfig found; set KUBECONFIG or run: wai kube add <path>")
+        return
+    rules = ProtectionRules.build(
+        config.cloud.protected.patterns,
+        config.cloud.protected.accounts,
+        config.cloud.protected.mode,
+    )
+    selected = config.cloud.kube_context or active
+    for context in contexts:
+        mark = "→" if context.name == selected else " "
+        protected = " ⚠ protected" if rules.matches(context.target()) else ""
+        typer.echo(f" {mark} {context.name:<46} ns={context.namespace}{protected}")
+
+
+@kube_app.command("use")
+def kube_use(context: str) -> None:
+    """Select a context for WAI. Your ~/.kube/config is never modified."""
+    from wai.cloud.kube import list_contexts
+
+    config = load_config()
+    contexts, _ = list_contexts(tuple(config.cloud.kubeconfigs))
+    if not any(c.name == context for c in contexts):
+        _fail(f"no context named {context!r}")
+    config.cloud.kube_context = context
+    save_config(config)
+    typer.secho(f"using {context}", fg=typer.colors.GREEN)
+
+
+@kube_app.command("add")
+def kube_add(path: str) -> None:
+    """Register an extra kubeconfig file."""
+    from pathlib import Path
+
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        _fail(f"no such file: {resolved}")
+    config = load_config()
+    if str(resolved) not in config.cloud.kubeconfigs:
+        config.cloud.kubeconfigs.append(str(resolved))
+        save_config(config)
+    typer.secho(f"registered {resolved}", fg=typer.colors.GREEN)
 
 
 def main() -> None:
