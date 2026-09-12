@@ -32,16 +32,28 @@ class ApprovalRequest:
     action: str
     """Short verb for the prompt: create, overwrite, edit, delete."""
     path: str
-    """Workspace-relative, for display."""
+    """The subject: a workspace-relative file, or `deployment/web`."""
+    target: str = ""
+    """The blast radius: `aws 123456789012 · eu-west-1`, `cluster prod-eu · ns default`.
+
+    "delete deployment web" is meaningless without "in cluster prod-eu-west",
+    so anything acting on a remote system must fill this in.
+    """
     diff: str = ""
     """Unified diff, or a summary when a diff makes no sense."""
+    dry_run: str = ""
+    """What the server says would happen, where the API supports asking."""
     recoverability: str = ""
-    """Whether git could get this back. The key fact for a delete."""
+    """Whether this could be undone. The key fact for a delete."""
     destructive: bool = False
+    protected: bool = False
+    """The target matched a protected-context rule; the UI must demand more
+    than a keypress."""
 
     @property
     def summary(self) -> str:
-        return f"{self.action} {self.path}"
+        where = f" in {self.target}" if self.target else ""
+        return f"{self.action} {self.path}{where}"
 
 
 @runtime_checkable

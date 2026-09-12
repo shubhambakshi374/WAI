@@ -35,6 +35,18 @@ dependencies = [
     "pathspec>=1.0",
 ]
 
+[project.optional-dependencies]
+k8s = ["kubernetes>=32.0"]
+azure = ["azure-identity>=1.20", "azure-mgmt-core>=1.5"]
+gcp = ["google-api-python-client>=2.150", "google-auth>=2.35"]
+all = [
+    "kubernetes>=32.0",
+    "azure-identity>=1.20",
+    "azure-mgmt-core>=1.5",
+    "google-api-python-client>=2.150",
+    "google-auth>=2.35",
+]
+
 [project.urls]
 Homepage = "https://github.com/packet-burst/WAI"
 Repository = "https://github.com/packet-burst/WAI"
@@ -44,6 +56,7 @@ wai = "wai.cli:main"
 
 [dependency-groups]
 dev = [
+    "wai[all]",
     "pytest>=8.3,<9",
     "pytest-asyncio>=1.0",
     "pytest-textual-snapshot>=1.1",
@@ -85,5 +98,16 @@ warn_unused_ignores = false
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "keyring.*", "tomli_w.*", "mistralai.*", "google.genai.*"]
+module = [
+    "boto3.*",
+    "botocore.*",
+    "keyring.*",
+    "tomli_w.*",
+    "mistralai.*",
+    "google.genai.*",
+    "kubernetes.*",
+    "googleapiclient.*",
+    "google.auth.*",
+    "azure.*",
+]
 ignore_missing_imports = true
