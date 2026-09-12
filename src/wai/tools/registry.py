@@ -15,6 +15,7 @@ from typing import Any
 from wai.core.errors import PathNotAllowed, ToolError
 from wai.core.types import ToolDef
 from wai.tools.base import Tool, ToolContext, ToolOutcome
+from wai.tools.edit import DeletePathTool, EditFileTool, WriteFileTool
 from wai.tools.fs import GlobTool, GrepTool, ListDirTool, ReadFileTool
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,11 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
+
+    def is_read_only(self, name: str) -> bool:
+        """Unknown tools count as mutating, so they take the cautious path."""
+        tool = self._tools.get(name)
+        return bool(tool and tool.read_only)
 
     @property
     def names(self) -> list[str]:
@@ -67,6 +73,9 @@ class ToolRegistry:
             return ToolOutcome.error(f"{name} failed: {exc}", summary="failed")
 
 
-def default_registry() -> ToolRegistry:
-    """The read-only filesystem tool set."""
-    return ToolRegistry([ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()])
+def default_registry(*, writes: bool = True) -> ToolRegistry:
+    """The filesystem tool set. Every write tool goes through the approval gate."""
+    tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
+    if writes:
+        tools += [WriteFileTool(), EditFileTool(), DeletePathTool()]
+    return ToolRegistry(tools)

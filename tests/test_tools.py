@@ -271,14 +271,38 @@ async def test_grep_denies_escape(registry, ctx) -> None:  # type: ignore[no-unt
 # -------------------------------------------------------------------- registry
 
 
-def test_registry_exposes_four_read_only_tools(registry) -> None:  # type: ignore[no-untyped-def]
-    assert registry.names == ["glob", "grep", "list_dir", "read_file"]
-    assert all(tool.read_only for tool in registry)
+def test_registry_splits_read_only_from_mutating(registry) -> None:  # type: ignore[no-untyped-def]
+    assert registry.names == [
+        "delete_path",
+        "edit_file",
+        "glob",
+        "grep",
+        "list_dir",
+        "read_file",
+        "write_file",
+    ]
+    assert sorted(t.name for t in registry if t.read_only) == [
+        "glob",
+        "grep",
+        "list_dir",
+        "read_file",
+    ]
+    assert sorted(t.name for t in registry if not t.read_only) == [
+        "delete_path",
+        "edit_file",
+        "write_file",
+    ]
+
+
+def test_registry_can_omit_the_write_tools() -> None:
+    from wai.tools import default_registry as make
+
+    assert make(writes=False).names == ["glob", "grep", "list_dir", "read_file"]
 
 
 def test_tool_defs_are_stable_and_schema_shaped(registry) -> None:  # type: ignore[no-untyped-def]
     defs = registry.to_tool_defs()
-    assert [d.name for d in defs] == ["glob", "grep", "list_dir", "read_file"]
+    assert [d.name for d in defs] == registry.names
     for d in defs:
         assert d.description
         assert d.input_schema["type"] == "object"

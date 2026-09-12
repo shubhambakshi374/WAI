@@ -150,7 +150,8 @@ async def test_tools_are_declared_on_the_request(session, registry, ctx) -> None
     provider = ScriptedProvider([text_turn()])
     await drive(provider, session, registry, ctx)
     names = [t.name for t in provider.requests[0].tools]
-    assert names == ["glob", "grep", "list_dir", "read_file"]
+    assert names == registry.names
+    assert "write_file" in names and "read_file" in names
 
 
 async def test_parallel_tool_calls_all_answered(session, registry, ctx) -> None:  # type: ignore[no-untyped-def]
