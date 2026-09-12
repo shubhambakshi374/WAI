@@ -31,12 +31,13 @@ from wai.config.secrets import (
     set_api_key,
 )
 from wai.core.errors import WaiError
-from wai.core.events import StreamError, TextDelta, ToolFinished, ToolStarted
+from wai.core.events import StreamError, TextDelta, ToolDenied, ToolFinished, ToolStarted
 from wai.core.session import Session
 from wai.core.types import Message, ModelInfo
 from wai.providers import PROVIDER_NAMES, create_provider
 from wai.storage.sessions import SessionStore
 from wai.tools import default_registry
+from wai.tools.approval import AllowAll, DenyAll, SessionApprovals
 
 app = typer.Typer(
     name="wai",
@@ -93,6 +94,15 @@ def chat(
         list[str] | None,
         typer.Option("--allow-path", help="Extra readable root. Repeatable."),
     ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Approve file changes without asking. --once cannot prompt, so "
+            "writes are refused without this.",
+        ),
+    ] = False,
 ) -> None:
     """Start the chat TUI, or run a single headless turn with --once."""
     extra = tuple(allow_path or ())
@@ -104,10 +114,13 @@ def chat(
             provider=provider,
             no_tools=no_tools,
             extra_roots=extra,
+            auto_approve=yes,
         )
         return
     try:
-        raise SystemExit(asyncio.run(_chat_once(once, profile, model, provider, no_tools, extra)))
+        raise SystemExit(
+            asyncio.run(_chat_once(once, profile, model, provider, no_tools, extra, yes))
+        )
     except WaiError as exc:
         _fail(str(exc))
     except KeyboardInterrupt:
@@ -121,6 +134,7 @@ async def _chat_once(
     provider_name: str | None,
     no_tools: bool,
     extra_roots: tuple[str, ...],
+    auto_approve: bool,
 ) -> int:
     """One prompt through the full agent loop.
 
@@ -133,7 +147,11 @@ async def _chat_once(
 
     workspace = build_workspace(config, extra_roots=extra_roots)
     registry = default_registry()
-    ctx = build_tool_context(config, workspace)
+    # --once is non-interactive by definition: there is nobody to prompt, so
+    # file changes fail closed unless the caller passed --yes.
+    ctx = build_tool_context(
+        config, workspace, approvals=SessionApprovals(AllowAll() if auto_approve else DenyAll())
+    )
     tools_on = config.tools.enabled and not no_tools
 
     session = Session(
@@ -170,6 +188,12 @@ async def _chat_once(
                     fg=typer.colors.BRIGHT_BLACK,
                     err=True,
                 )
+            elif isinstance(event, ToolDenied):
+                typer.secho(
+                    f"    refused: {event.name} (re-run with --yes to allow changes)",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
             elif isinstance(event, ToolFinished):
                 colour = typer.colors.RED if event.is_error else typer.colors.BRIGHT_BLACK
                 typer.secho(f"    {event.summary}", fg=colour, err=True)
@@ -185,7 +209,8 @@ async def _chat_once(
     typer.secho(
         f"[{prof.provider}/{prof.model}] "
         f"{session.usage.input_tokens} in / {session.usage.output_tokens} out"
-        + (f" · workspace {workspace.root}" if tools_on else " · tools off"),
+        + (f" · workspace {workspace.root}" if tools_on else " · tools off")
+        + (" · writes approved" if tools_on and auto_approve else ""),
         fg=typer.colors.BRIGHT_BLACK,
         err=True,
     )
@@ -216,6 +241,7 @@ def _launch_tui(
     provider: str | None = None,
     no_tools: bool = False,
     extra_roots: tuple[str, ...] = (),
+    auto_approve: bool = False,
 ) -> None:
     from wai.tui.app import WaiApp
 
@@ -227,6 +253,7 @@ def _launch_tui(
             provider_override=provider,
             no_tools=no_tools,
             extra_roots=extra_roots,
+            auto_approve=auto_approve,
         ).run()
     except WaiError as exc:
         _fail(str(exc))
@@ -420,8 +447,8 @@ def tools_list() -> None:
         typer.echo(f"  + {extra}")
     typer.echo(f"tools:     {state} (max {config.tools.max_iterations} iterations/turn)\n")
     for tool in sorted(registry, key=lambda t: t.name):
-        access = "read-only" if tool.read_only else "WRITES"
-        typer.echo(f"  {tool.name:<12} [{access}]  {tool.description.split('.')[0]}.")
+        access = "read-only" if tool.read_only else "needs approval"
+        typer.echo(f"  {tool.name:<12} [{access:^14}]  {tool.description.split('.')[0]}.")
     if config.workspace.deny_secrets:
         typer.echo(
             "\ncredential-shaped files (.env, private keys) are blocked inside the workspace"
