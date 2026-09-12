@@ -8,7 +8,8 @@ import contextlib
 from textual.widgets import Label
 from textual.worker import WorkerCancelled
 
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, default_events
+from wai.agent import unanswered_tool_uses
 from wai.config.models import Config
 from wai.core.errors import RateLimitError
 from wai.core.events import MessageEnd, MessageStart, ReasoningDelta, TextDelta, Usage
@@ -211,10 +212,11 @@ async def test_ctrl_c_cancels_an_in_flight_stream() -> None:
         await pilot.pause()
 
         assert pilot.app.screen.query_one(StatusBar).state == "cancelled"
+        # The partial text is kept as content; "cancelled" is a display marker
+        # only, so the stored conversation stays free of UI annotations.
         assert "partial" in app.session.messages[-1].text
-        assert "cancelled" in app.session.messages[-1].text
-        # The partial turn is still persisted.
         assert "partial" in app.store.load(app.session.id).messages[-1].text
+        assert unanswered_tool_uses(app.session) == []
 
 
 async def test_ctrl_c_with_no_stream_exits() -> None:
@@ -305,10 +307,108 @@ async def test_status_bar_state_renders_while_streaming() -> None:
         await asyncio.wait_for(stalled.wait(), timeout=2)
         await pilot.pause()
         state = pilot.app.screen.query_one("#status-state", Label)
-        assert "streaming" in str(state.render())
+        assert "working" in str(state.render())
 
         await pilot.press("ctrl+c")
         with contextlib.suppress(WorkerCancelled):
             await pilot.app.workers.wait_for_complete()
         await pilot.pause()
         assert str(state.render()) == "cancelled"
+
+
+# ------------------------------------------------------------------ tool calls
+
+
+def _tool_events(call_id: str = "t1", name: str = "list_dir"):  # type: ignore[no-untyped-def]
+    from wai.core.events import ToolCallEnd, ToolCallStart
+    from wai.core.types import StopReason
+
+    return [
+        MessageStart(model="fake-1"),
+        ToolCallStart(index=0, id=call_id, name=name),
+        ToolCallEnd(index=0, id=call_id, name=name, input={}),
+        MessageEnd(stop_reason=StopReason.TOOL_USE, usage=Usage(output_tokens=1)),
+    ]
+
+
+class ToolThenTextProvider(FakeProvider):
+    """One tool-calling turn, then a plain answer."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.turn = 0
+
+    async def stream(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        self.turn += 1
+        events = _tool_events() if self.turn == 1 else default_events("All done.")
+        for event in events:
+            yield event
+
+
+async def test_tool_calls_render_and_resolve() -> None:
+    from wai.tui.widgets.tool_call import ToolCallWidget
+
+    app = make_app(ToolThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "what is here?")
+        await _settle(pilot)
+
+        widgets = pilot.app.screen.query(ToolCallWidget)
+        assert len(widgets) == 1
+        widget = widgets.first()
+        assert widget.tool_name == "list_dir"
+        assert widget.has_class("-done"), "should resolve out of the running state"
+        assert not widget.has_class("-running")
+
+
+async def test_tool_turn_persists_without_orphans() -> None:
+    app = make_app(ToolThenTextProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "what is here?")
+        await _settle(pilot)
+
+    reloaded = app.store.load(app.session.id)
+    assert unanswered_tool_uses(reloaded) == []
+    assert reloaded.messages[-1].text == "Alldone."  # fixture splits on spaces
+    assert reloaded.workspace_root == str(app.workspace.root)
+    assert reloaded.tools_enabled is True
+
+
+async def test_failing_tool_marks_the_widget() -> None:
+    from wai.tui.widgets.tool_call import ToolCallWidget
+
+    class BadTool(ToolThenTextProvider):
+        async def stream(self, request):  # type: ignore[no-untyped-def]
+            self.calls.append(request)
+            self.turn += 1
+            events = _tool_events(name="nope") if self.turn == 1 else default_events("Sorry.")
+            for event in events:
+                yield event
+
+    app = make_app(BadTool())
+    async with app.run_test() as pilot:
+        await _send(pilot, "go")
+        await _settle(pilot)
+        widget = pilot.app.screen.query(ToolCallWidget).first()
+        assert widget.has_class("-failed")
+
+
+async def test_provider_error_is_recorded_in_the_session() -> None:
+    """A resumed session should show that the turn failed."""
+    app = make_app(FakeProvider(error=RateLimitError("slow down", provider="fake")))
+    async with app.run_test() as pilot:
+        await _send(pilot, "hi")
+        await _settle(pilot)
+        assert "slow down" in app.session.messages[-1].text
+        assert app.store.load(app.session.id).messages[-1].text.startswith("**error:**")
+
+
+async def test_no_tools_flag_disables_them() -> None:
+    provider = FakeProvider()
+    app = WaiApp(config=Config(), provider=provider, no_tools=True)
+    async with app.run_test() as pilot:
+        await _send(pilot, "hi")
+        await _settle(pilot)
+        assert app.session.tools_enabled is False
+        assert provider.calls[0].tools == []

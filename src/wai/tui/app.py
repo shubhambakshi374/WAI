@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual.app import App
 
 from wai import __version__
+from wai.agent import build_tool_context, build_workspace
 from wai.config import load_config, resolve_profile, sessions_dir
 from wai.config.models import Config
 from wai.core.session import Session
@@ -12,6 +13,7 @@ from wai.core.types import ModelInfo
 from wai.providers import create_provider
 from wai.providers.base import BaseProvider
 from wai.storage.sessions import SessionStore
+from wai.tools import ToolContext, ToolRegistry, default_registry
 from wai.tui.screens.chat import ChatScreen
 
 
@@ -29,8 +31,11 @@ class WaiApp(App[None]):
         resume: str | None = None,
         model_override: str | None = None,
         provider_override: str | None = None,
+        no_tools: bool = False,
+        extra_roots: tuple[str, ...] = (),
         config: Config | None = None,
         provider: BaseProvider | None = None,
+        workspace_root: str | None = None,
     ) -> None:
         super().__init__()
         self.config = config or load_config()
@@ -40,6 +45,10 @@ class WaiApp(App[None]):
         if model_override:
             profile = profile.model_copy(update={"model": model_override})
         self.profile = profile
+        self.workspace = build_workspace(self.config, root=workspace_root, extra_roots=extra_roots)
+        self.registry: ToolRegistry = default_registry()
+        self.tool_ctx: ToolContext = build_tool_context(self.config, self.workspace)
+        self.tools_enabled = self.config.tools.enabled and not no_tools
         self.store = SessionStore(sessions_dir())
         self.session = self._load_or_create(resume)
         # An injected provider keeps the app testable without any network.
@@ -64,6 +73,8 @@ class WaiApp(App[None]):
             system=self.profile.system,
             max_tokens=self.profile.max_tokens,
             temperature=self.profile.temperature,
+            workspace_root=str(self.workspace.root),
+            tools_enabled=self.tools_enabled,
         )
         self.store.create(session)
         return session
