@@ -1,0 +1,25 @@
+/* Layout only. Widget-local styling lives in each widget's DEFAULT_CSS. */
+
+Screen {
+    layout: vertical;
+    background: $background;
+}
+
+/* Only the Footer docks. The composer must flow in the vertical layout, or
+   it is placed over the footer instead of above it. */
+Footer {
+    dock: bottom;
+}
+
+#transcript {
+    height: 1fr;
+}
+
+#composer {
+    height: auto;
+    margin: 0 1;
+}
+
+Toast {
+    max-width: 60;
+}
