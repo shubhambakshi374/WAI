@@ -10,18 +10,29 @@ into a software factory.
 
 ## Install
 
-Requires Python 3.11+.
+Requires Python 3.11+ on the machine; you do not need to manage it yourself if
+you use [uv](https://docs.astral.sh/uv/), which fetches an interpreter for you.
+
+**Today, from git** --- installs a `wai` command on your PATH:
+
+```bash
+uv tool install git+https://github.com/shubhambakshi374/WAI
+```
+
+**Once released to PyPI:**
 
 ```bash
 uv tool install wai          # or: pipx install wai
 ```
 
-From a checkout:
+**From a clone**, for development or to run an unreleased change:
 
 ```bash
-uv sync --all-groups
-uv run wai
+uv tool install .            # a real `wai` command, installed from the checkout
+uvx --from . wai --version   # or run it once, installing nothing
 ```
+
+Upgrade with `uv tool upgrade wai`, remove with `uv tool uninstall wai`.
 
 ## Quick start
 

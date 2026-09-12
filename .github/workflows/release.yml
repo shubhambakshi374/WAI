@@ -1,0 +1,60 @@
+name: Release
+
+# Publishes to PyPI when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Uses PyPI Trusted Publishing (OIDC) -- no API token stored in the repo.
+# One-time setup at https://pypi.org/manage/account/publishing/ :
+#   project: wai · owner: shubhambakshi374 · repo: WAI
+#   workflow: release.yml · environment: pypi
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Fail if the tag does not match the project version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv version --short)"
+          if [ "$tag" != "$version" ]; then
+            echo "tag $tag != pyproject version $version" >&2
+            exit 1
+          fi
+        if: startsWith(github.ref, 'refs/tags/')
+
+      - name: Gate the release on the full check suite
+        run: |
+          uv sync --all-groups
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy
+          uv run pytest -q
+
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
