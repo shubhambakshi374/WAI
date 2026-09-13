@@ -4,10 +4,10 @@ A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
-> **Status: Phase 2a.** Streaming chat across all eight providers; filesystem
-> tools behind a diff-first approval gate; and the DevOps foundations ---
-> cloud auth, Kubernetes contexts, secret redaction and protected
-> environments. The cloud *tools* themselves land in 2b–2e.
+> **Status: Phase 2b.** Streaming chat across all eight providers; filesystem
+> tools behind a diff-first approval gate; and **Kubernetes reads that draw
+> you a picture** --- usage charts, storage, and a topology view. AWS, Azure
+> and GCP tools land in 2c–2e.
 
 ## Install
 
@@ -164,6 +164,44 @@ Anything starting with `/` is a command, not a prompt.
 
 `wai login` and `wai kube list|use|add` do the same from the shell.
 
+## Kubernetes
+
+Read-only in this release. Ask a question, get a chart:
+
+```
+> what is running in the qam namespace and how is it sized?
+
+◆ Deployment/api  3/3 ready
+└─ ◇ ReplicaSet/api-6f4
+   ├─ ● Pod/api-6f4-2xk  Running 1/1
+   │  ├─ · → mounts PersistentVolumeClaim/data
+   │  └─ · ← selects by Service/api
+   └─ ● Pod/api-6f4-9dm  CrashLoopBackOff
+◈ Service/api  ClusterIP
+├─ · → selects 2 Pods
+└─ · ← routes-to by Ingress/public
+```
+
+`k8s_topology` follows `ownerReferences` for the tree and infers the rest ---
+Service selectors, Ingress backends, volume mounts, ConfigMap references, HPA
+targets --- so it is a graph, not just a listing. `k8s_usage` charts requests
+against limits against live usage; `k8s_top` and `k8s_storage` do the same for
+node/pod metrics and volumes. Press Enter on any chart to expand it full-screen.
+
+**The model never sees the chart.** Tools return a compact text summary for the
+LLM and the visual separately, so a whole-cluster topology costs almost no
+context. That is what makes this affordable rather than a novelty.
+
+### What it will not pretend to know
+
+- **No metrics-server, no live usage.** `k8s_top` names the missing component
+  and how to install it. Requests, limits and counts still work.
+- **Volume fill level is not available.** metrics-server exposes no volume
+  statistics --- that needs Prometheus. `k8s_storage` charts provisioned size
+  relative to the largest claim and says so. A bound PVC has requested ==
+  capacity, so charting one against the other would show every volume at 100%
+  and read as "full".
+
 ## Clouds
 
 Optional extras, so you only carry what you use:
@@ -182,9 +220,19 @@ works without a registered client, so there is no way around that.
 
 ### Two things it does not do
 
-**It never modifies `~/.kube/config`.** `/kube use` records the context in
-WAI's own config. Changing your global context as a side effect of a chat
-message would silently retarget every other terminal you have open.
+**It does not modify `~/.kube/config` by default.** `/kube use` records the
+context in WAI's own config, because changing your global context as a side
+effect of a chat message would silently retarget every other terminal you have
+open. If you want kubectl-like behaviour:
+
+```toml
+[cloud]
+kube_context_scope = "global"   # default "wai"
+```
+
+or per invocation: `/kube use <ctx> --global` (and `--local` to override the
+other way). The global write sets exactly one key and preserves the rest of the
+file, atomically.
 
 **It redacts secrets before the model sees them.** Tool results are transmitted
 to whichever LLM provider is active, so an unredacted Kubernetes Secret would
@@ -313,7 +361,10 @@ Snapshot tests render the TUI to SVG and will churn when Textual is upgraded:
 - **Phase 1 — skeleton and chat.** ✅ Eight providers, streaming TUI, sessions, BYOK config.
 - **Phase 1.5 — the workspace and read-only tools.** ✅ Agent loop, `read_file`/`list_dir`/`glob`/`grep`, sandboxed.
 - **Phase 1.75 — writes behind an approval gate.** ✅ `write_file`/`edit_file`/`delete_path`, diff-first prompts.
-- **Phase 2 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
+- **Phase 2a — DevOps foundations.** ✅ Cloud auth, contexts, redaction, protected environments, slash commands.
+- **Phase 2b — Kubernetes, visualised.** ✅ Topology, usage, storage, metrics. Reads only.
+- **Phase 2c–2e —** AWS, Azure/GCP, and the justified CLI fallback.
+- **Phase 3 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
 - **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
 
 ## License
