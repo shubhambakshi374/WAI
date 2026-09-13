@@ -165,12 +165,14 @@ async def _chat_once(
         system=prof.system,
         max_tokens=prof.max_tokens,
         temperature=prof.temperature,
+        base_url=prof.base_url,
+        model_supports_tools=prof.supports_tools is not False,
         workspace_root=str(workspace.root),
         tools_enabled=tools_on,
     )
     session.append(Message.user(prompt))
 
-    adapter = create_provider(prof.provider, config)
+    adapter = create_provider(prof.provider, config, profile=prof)
     failed = False
     mid_line = False
     try:
@@ -375,7 +377,10 @@ def providers_models(
         models = catalog_for(provider)
     else:
         config = load_config()
-        adapter = create_provider(provider, config)
+        _, prof = resolve_profile(config, None)
+        adapter = create_provider(
+            provider, config, profile=prof if prof.provider == provider else None
+        )
 
         async def _go() -> list[ModelInfo]:
             try:

@@ -92,6 +92,31 @@ async def cmd_key(app: WaiApp, args: list[str]) -> CommandResult:
     return CommandResult.silent()
 
 
+async def cmd_profile(app: WaiApp, args: list[str]) -> CommandResult:
+    """Profiles are how a self-hosted endpoint is named, so they need a door."""
+    profiles = app.config.profiles
+    if args and args[0] == "use":
+        if len(args) < 2:
+            return CommandResult.error("usage: /profile use <name>")
+        try:
+            await app.use_profile(args[1])
+        except KeyError:
+            return CommandResult.error(
+                f"No profile named {args[1]!r}. Known: {', '.join(sorted(profiles))}"
+            )
+        session = app.session
+        where = f" at {session.base_url}" if session.base_url else ""
+        return CommandResult(f"Using profile {args[1]}: {session.provider}/{session.model}{where}.")
+
+    rows = ["Profiles:"]
+    for name, profile in sorted(profiles.items()):
+        mark = "→" if name == app.config.default_profile else " "
+        where = f"  {profile.base_url}" if profile.base_url else ""
+        rows.append(f" {mark} {name:<16} {profile.provider}/{profile.model}{where}")
+    rows.append("\n  /profile use <name> to switch")
+    return CommandResult("\n".join(rows), title="Profiles")
+
+
 async def cmd_setup(app: WaiApp, args: list[str]) -> CommandResult:
     from wai.providers import PROVIDER_NAMES
 

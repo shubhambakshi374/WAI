@@ -58,12 +58,23 @@ class ProviderPicker(ModalScreen[str | None]):
 
     def _options(self) -> list[Option]:
         from wai.config.secrets import USES_CREDENTIAL_CHAIN, credential_status
+        from wai.providers.local import LocalProvider, configured_endpoints
 
+        endpoints = dict(configured_endpoints(self.wai.config))
         current = self.wai.session.provider
         options: list[Option] = []
         for name in PROVIDER_NAMES:
             status = credential_status(name)
             self._names.append(name)
+            if name == LocalProvider.name and endpoints:
+                options.append(
+                    Option(
+                        f"● {name:<15} {'ready':<22} "
+                        f"{next(iter(endpoints.values()))}{' ← current' if name == current else ''}",
+                        id=name,
+                    )
+                )
+                continue
             if status.available:
                 state = "ready"
                 detail = status.source

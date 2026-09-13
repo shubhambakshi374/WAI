@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
+from typing import Any as _Any  # noqa: F401
 
 from textual import work
 from textual.app import ComposeResult
@@ -23,9 +24,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, LoadingIndicator, OptionList
 from textual.widgets.option_list import Option
 
+from wai.config.models import Profile
 from wai.config.secrets import USES_CREDENTIAL_CHAIN, credential_status, set_api_key
 from wai.core.types import ModelInfo
 from wai.providers import PROVIDER_NAMES
+from wai.providers.discovery import LocalEndpoint
 
 if TYPE_CHECKING:
     from wai.tui.app import WaiApp
@@ -34,6 +37,8 @@ if TYPE_CHECKING:
 class Step(StrEnum):
     PROVIDER = auto()
     KEY = auto()
+    ENDPOINT = auto()
+    """Local providers pick a server instead of pasting a key."""
     CHECKING = auto()
     MODEL = auto()
 
@@ -67,10 +72,15 @@ class SetupWizard(ModalScreen[bool]):
     def __init__(self, provider: str | None = None) -> None:
         super().__init__()
         self.provider = provider or ""
-        self.step = Step.KEY if provider else Step.PROVIDER
+        self.step = self._step_after_provider() if provider else Step.PROVIDER
         self.models: list[ModelInfo] = []
+        self.endpoints: list[LocalEndpoint] = []
+        self.base_url = ""
         self.problem = ""
         self._searching = False
+
+    def _step_after_provider(self) -> Step:
+        return Step.ENDPOINT if self.provider == "local" else Step.KEY
 
     @property
     def wai(self) -> WaiApp:
@@ -126,6 +136,17 @@ class SetupWizard(ModalScreen[bool]):
             if self.problem:
                 await body.mount(Label(self.problem, classes="problem"))
 
+        elif self.step is Step.ENDPOINT:
+            label.update("2 of 4 — which server?")
+            await body.mount(OptionList(id="endpoints"))
+            await body.mount(
+                Input(placeholder="…or a URL, e.g. https://vllm.internal:8000", id="url")
+            )
+            if self.problem:
+                await body.mount(Label(self.problem, classes="problem"))
+            nxt.label = "Use this"
+            self.find_endpoints()
+
         elif self.step is Step.CHECKING:
             label.update(f"3 of 4 — asking {self.provider} what it serves…")
             await body.mount(LoadingIndicator())
@@ -178,7 +199,8 @@ class SetupWizard(ModalScreen[bool]):
             self.advance()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if self.step is Step.PROVIDER:
+        # Enter on a list entry should move on, not sit there.
+        if self.step in (Step.PROVIDER, Step.ENDPOINT, Step.MODEL):
             self.advance()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -191,9 +213,33 @@ class SetupWizard(ModalScreen[bool]):
             options = self.query_one("#providers", OptionList)
             index = options.highlighted or 0
             self.provider = str(options.get_option_at_index(index).id or "")
-            self.step = Step.KEY
+            self.step = self._step_after_provider()
             self.problem = ""
             await self._show_step()
+            return
+
+        if self.step is Step.ENDPOINT:
+            typed = self.query_one("#url", Input).value.strip()
+            if typed:
+                from wai.providers.discovery import probe
+
+                found = await probe(typed)
+                if not found.ok:
+                    self.problem = f"{typed}: {found.error}. Is the server running?"
+                    await self._show_step()
+                    return
+                self.base_url = found.url
+            else:
+                options = self.query_one("#endpoints", OptionList)
+                if not options.option_count:
+                    self.problem = "No server found. Start one, or type its URL."
+                    await self._show_step()
+                    return
+                self.base_url = str(options.get_option_at_index(options.highlighted or 0).id or "")
+            self.step = Step.CHECKING
+            self.problem = ""
+            await self._show_step()
+            await self._health_check()
             return
 
         if self.step is Step.KEY:
@@ -226,8 +272,25 @@ class SetupWizard(ModalScreen[bool]):
                 chosen = typed if typed and not listed.startswith(typed) else listed
             if not chosen:
                 return
-            await self.wai.apply_setup(self.provider, chosen)
+            await self.wai.apply_setup(self.provider, chosen, base_url=self.base_url)
             self.dismiss(True)
+
+    @work(exclusive=True, group="discovery")
+    async def find_endpoints(self) -> None:
+        from wai.providers.discovery import discover
+
+        options = self.query_one("#endpoints", OptionList)
+        options.clear_options()
+        options.add_options([Option("searching…", id="")])
+        self.endpoints = await discover()
+        options.clear_options()
+        working = [e for e in self.endpoints if e.ok]
+        if working:
+            options.add_options([Option(e.label, id=e.url) for e in working])
+            options.highlighted = 0
+            options.focus()
+        else:
+            options.add_options([Option("nothing found — type a URL below", id="")])
 
     async def _health_check(self) -> None:
         # Reached through the registry module, not a re-exported name, so
@@ -236,7 +299,9 @@ class SetupWizard(ModalScreen[bool]):
         from wai.providers.registry import catalog_for, merge_models
 
         try:
-            found = await registry.live_models(self.provider, self.wai.config)
+            found = await registry.live_models(
+                self.provider, self.wai.config, profile=self._draft_profile()
+            )
         except Exception as exc:
             self.step = Step.KEY
             self.problem = f"{self.provider} rejected that: {_first_line(exc)}"
@@ -268,6 +333,9 @@ class SetupWizard(ModalScreen[bool]):
         self.models = result.known
         self._fill_models(result.matches)
         note.update(result.note or "Not listed? Keep typing — WAI re-queries the provider.")
+
+    def _draft_profile(self) -> Profile:
+        return Profile(provider=self.provider, model="", base_url=self.base_url)
 
     def action_cancel(self) -> None:
         self.dismiss(False)

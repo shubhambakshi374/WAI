@@ -7,7 +7,7 @@ from textual.app import App
 from wai import __version__
 from wai.agent import build_tool_context, build_workspace
 from wai.config import load_config, resolve_profile, save_config, sessions_dir
-from wai.config.models import Config
+from wai.config.models import Config, Profile
 from wai.core.session import Session
 from wai.core.types import ModelInfo
 from wai.providers import create_provider
@@ -61,7 +61,9 @@ class WaiApp(App[None]):
         self.session = self._load_or_create(resume)
         # An injected provider keeps the app testable without any network.
         self._injected_provider = provider
-        self.provider: BaseProvider = provider or create_provider(profile.provider, self.config)
+        self.provider: BaseProvider = provider or create_provider(
+            profile.provider, self.config, profile=profile
+        )
         self.sub_title = f"v{__version__}"
 
     def _load_or_create(self, resume: str | None) -> Session:
@@ -81,6 +83,8 @@ class WaiApp(App[None]):
             system=self.profile.system,
             max_tokens=self.profile.max_tokens,
             temperature=self.profile.temperature,
+            base_url=self.profile.base_url,
+            model_supports_tools=self.profile.supports_tools is not False,
             workspace_root=str(self.workspace.root),
             tools_enabled=self.tools_enabled,
         )
@@ -100,18 +104,24 @@ class WaiApp(App[None]):
         self.session.model = model.id
         if model.max_output_tokens:
             self.session.max_tokens = min(self.session.max_tokens, model.max_output_tokens)
+        # Capability travels with the model, so switching to one without tools
+        # disables them rather than failing on the next turn.
+        self.session.model_supports_tools = model.supports_tools
         self.store.update_header(self.session)
 
     # ------------------------------------------------ slash-command surface
 
-    async def switch_provider(self, name: str) -> None:
+    async def switch_provider(self, name: str, profile: Profile | None = None) -> None:
         """Swap provider, keeping the transcript, and pick a sensible model."""
         from wai.providers.registry import catalog_for
 
+        if profile is not None:
+            self.profile = profile
         if self._injected_provider is None:
             await self.provider.close()
-            self.provider = create_provider(name, self.config)
+            self.provider = create_provider(name, self.config, profile=profile or self.profile)
         self.session.provider = name
+        self.session.base_url = (profile or self.profile).base_url if profile else ""
         catalog = catalog_for(name)
         if catalog and not any(m.id == self.session.model for m in catalog):
             self.session.model = catalog[0].id
@@ -127,25 +137,48 @@ class WaiApp(App[None]):
             self.config.cloud.kubeconfigs.append(path)
             save_config(self.config)
 
-    async def apply_setup(self, provider: str, model: str) -> None:
+    async def use_profile(self, name: str) -> str:
+        """Switch to a named profile, endpoint and all."""
+        profile = self.config.profiles.get(name)
+        if profile is None:
+            raise KeyError(name)
+        self.config.default_profile = name
+        save_config(self.config)
+        await self.switch_provider(profile.provider, profile)
+        self.session.model = profile.model
+        self.session.max_tokens = profile.max_tokens
+        self.session.system = profile.system
+        self.session.model_supports_tools = profile.supports_tools is not False
+        self.store.update_header(self.session)
+        return name
+
+    async def apply_setup(self, provider: str, model: str, *, base_url: str = "") -> None:
         """Adopt what the wizard chose, for this session and the next."""
         from wai.config.loader import resolve_profile as _resolve
 
-        await self.switch_provider(provider)
-        self.session.model = model
-        name, profile = _resolve(self.config, None)
-        self.config.profiles[name] = profile.model_copy(
-            update={"provider": provider, "model": model}
+        name, existing = _resolve(self.config, None)
+        updated = existing.model_copy(
+            update={"provider": provider, "model": model, "base_url": base_url}
         )
+        self.config.profiles[name] = updated
         save_config(self.config)
+        await self.switch_provider(provider, updated)
+        self.session.model = model
+        self.session.base_url = base_url
         self.store.update_header(self.session)
 
     @property
     def configured_providers(self) -> list[str]:
+        """Usable right now. For `local` that means a profile names an
+        endpoint, not that a key exists --- there is no key."""
         from wai.config.secrets import credential_status
         from wai.providers import PROVIDER_NAMES
+        from wai.providers.local import LocalProvider, configured_endpoints
 
-        return [n for n in PROVIDER_NAMES if credential_status(n).available]
+        ready = [n for n in PROVIDER_NAMES if credential_status(n).available]
+        if configured_endpoints(self.config):
+            ready.append(LocalProvider.name)
+        return ready
 
     def open_setup(self, provider: str | None = None) -> None:
         from wai.tui.widgets.setup import SetupWizard
