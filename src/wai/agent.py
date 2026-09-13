@@ -37,7 +37,7 @@ from wai.core.types import Message, Role, StopReason, ToolResultBlock, ToolUseBl
 from wai.providers.base import Provider
 from wai.runner import TurnAccumulator, stream_turn
 from wai.tools.approval import ApprovalPolicy, DenyAll
-from wai.tools.base import ToolContext, ToolOutcome
+from wai.tools.base import CloudContext, ToolContext, ToolOutcome
 from wai.tools.registry import ToolRegistry
 from wai.workspace import Workspace
 
@@ -275,5 +275,30 @@ def build_tool_context(
     return ToolContext(
         workspace=workspace,
         approvals=approvals or DenyAll(),
+        cloud=build_cloud_context(config),
         max_file_bytes=config.tools.max_file_bytes,
+    )
+
+
+def build_cloud_context(config: Config) -> CloudContext:
+    """Cluster state for the tools. The client itself is built lazily, so a
+    session that never mentions Kubernetes never connects to one."""
+    from wai.cloud.base import ProtectionRules, integration
+
+    settings = config.cloud
+    kubeconfigs = tuple(settings.kubeconfigs)
+    provider = None
+    entry = integration("k8s")
+    if entry and entry.available:
+        from wai.cloud.k8s import K8sProvider
+
+        provider = K8sProvider(context=settings.kube_context, kubeconfigs=kubeconfigs)
+    return CloudContext(
+        k8s=provider,
+        redact_secrets=settings.secret_redaction,
+        kubeconfigs=kubeconfigs,
+        kube_context=settings.kube_context,
+        protection=ProtectionRules.build(
+            settings.protected.patterns, settings.protected.accounts, settings.protected.mode
+        ),
     )
