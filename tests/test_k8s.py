@@ -138,6 +138,11 @@ class FakeClient:
     async def api_available(self, group_version: str) -> bool:
         return group_version in await self.api_groups()
 
+    async def resolve_kind(self, kind, api_version=""):  # type: ignore[no-untyped-def]
+        if api_version:
+            return api_version
+        return {"Deployment": "apps/v1", "Ingress": "networking.k8s.io/v1"}.get(kind, "v1")
+
     async def list_kind(self, api_version, kind, namespace=None, **kw):  # type: ignore[no-untyped-def]
         self.calls.append((api_version, kind))
         return list(self.objects.get(kind, []))
@@ -540,3 +545,133 @@ async def test_storage_does_not_claim_a_fill_level(tmp_path) -> None:  # type: i
     assert all(b.scale == 300.0 for b in bars.bars), "scaled against the largest"
     assert "100%" not in out.content
     assert "Prometheus" in out.content
+
+
+# ------------------------------------------------------------------- explain
+
+DEPLOYMENT_DOC: dict[str, Any] = {
+    "components": {
+        "schemas": {
+            "io.k8s.api.apps.v1.Deployment": {
+                "description": "Deployment enables declarative updates.",
+                "type": "object",
+                "x-kubernetes-group-version-kind": [
+                    {"group": "apps", "kind": "Deployment", "version": "v1"}
+                ],
+                "properties": {
+                    "spec": {
+                        "description": "Specification of the desired behavior.",
+                        "allOf": [
+                            {"$ref": "#/components/schemas/io.k8s.api.apps.v1.DeploymentSpec"}
+                        ],
+                    }
+                },
+            },
+            "io.k8s.api.apps.v1.DeploymentSpec": {
+                "type": "object",
+                "description": "DeploymentSpec is the specification.",
+                "required": ["selector", "template"],
+                "properties": {
+                    "replicas": {"type": "integer", "description": "Number of desired pods."},
+                    "selector": {"type": "object", "description": "Label selector."},
+                    "strategy": {
+                        "description": "The deployment strategy.",
+                        "allOf": [
+                            {"$ref": "#/components/schemas/io.k8s.api.apps.v1.DeploymentStrategy"}
+                        ],
+                    },
+                    "containers": {
+                        "type": "array",
+                        "items": {"$ref": "#/components/schemas/io.k8s.api.core.v1.Container"},
+                    },
+                },
+            },
+            "io.k8s.api.apps.v1.DeploymentStrategy": {
+                "type": "object",
+                "properties": {"type": {"type": "string", "description": "Type of deployment."}},
+            },
+            "io.k8s.api.core.v1.Container": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string", "description": "Container name."}},
+            },
+        }
+    }
+}
+
+
+def test_explain_finds_a_kind_by_its_gvk_marker() -> None:
+    out = k8s_api.explain(DEPLOYMENT_DOC, "Deployment")
+    assert out["path"] == "Deployment"
+    assert "spec" in out["fields"]
+
+
+def test_explain_walks_a_dotted_path_through_allof_refs() -> None:
+    """Kubernetes wraps object refs in allOf, so a naive $ref lookup misses them."""
+    out = k8s_api.explain(DEPLOYMENT_DOC, "Deployment", "spec")
+    assert out["required"] == ["selector", "template"]
+    assert out["fields"]["replicas"]["type"] == "integer"
+    assert out["fields"]["replicas"]["required"] is False
+    assert out["fields"]["selector"]["required"] is True
+
+    nested = k8s_api.explain(DEPLOYMENT_DOC, "Deployment", "spec.strategy")
+    assert "type" in nested["fields"]
+
+
+def test_explain_steps_into_array_items() -> None:
+    """spec.containers is a list; the useful schema is the element's."""
+    out = k8s_api.explain(DEPLOYMENT_DOC, "Deployment", "spec.containers")
+    assert "name" in out["fields"]
+    assert out["fields"]["name"]["required"] is True
+
+
+def test_explain_reports_array_types_readably() -> None:
+    out = k8s_api.explain(DEPLOYMENT_DOC, "Deployment", "spec")
+    assert out["fields"]["containers"]["type"] == "[]Container"
+
+
+def test_explain_on_a_typo_lists_the_real_fields() -> None:
+    """The error is the correction, so the model fixes it in one step."""
+    with pytest.raises(KeyError) as exc:
+        k8s_api.explain(DEPLOYMENT_DOC, "Deployment", "spec.replicaz")
+    assert "replicas" in str(exc.value)
+
+
+def test_explain_on_an_unknown_kind() -> None:
+    with pytest.raises(KeyError, match="Nonesuch"):
+        k8s_api.explain(DEPLOYMENT_DOC, "Nonesuch")
+
+
+async def test_explain_tool_renders_and_tables(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    class SchemaClient(FakeClient):
+        async def resolve_kind(self, kind, api_version=""):  # type: ignore[no-untyped-def]
+            return api_version or "apps/v1"
+
+        async def schema_document(self, group_version):  # type: ignore[no-untyped-def]
+            return DEPLOYMENT_DOC
+
+    out = await tool("k8s_explain").run(
+        {"kind": "Deployment", "field": "spec"}, context_for(SchemaClient(), tmp_path)
+    )
+    assert not out.is_error
+    assert "REQUIRED: selector, template" in out.content
+    assert isinstance(out.visual, Table)
+
+
+async def test_api_version_comes_from_discovery_not_a_guess(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The old hardcoded table knew a dozen kinds and was wrong for every CRD."""
+    seen: list[str] = []
+
+    class Recording(FakeClient):
+        async def resolve_kind(self, kind, api_version=""):  # type: ignore[no-untyped-def]
+            seen.append(kind)
+            return "cert-manager.io/v1"
+
+        async def list_kind(self, api_version, kind, namespace=None, **kw):  # type: ignore[no-untyped-def]
+            self.calls.append((api_version, kind))
+            return []
+
+    client = Recording()
+    await tool("k8s_list").run({"kind": "Certificate"}, context_for(client, tmp_path))
+    assert seen == ["Certificate"]
+    assert client.calls == [("cert-manager.io/v1", "Certificate")]

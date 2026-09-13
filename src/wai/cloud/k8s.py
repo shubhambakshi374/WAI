@@ -61,6 +61,8 @@ class K8sClient:
     dynamic: Any
     context: str = ""
     _apis: set[str] | None = field(default=None, repr=False)
+    _openapi_index: dict[str, Any] | None = field(default=None, repr=False)
+    _schema_cache: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     async def api_groups(self) -> set[str]:
         if self._apis is None:
@@ -125,6 +127,64 @@ class K8sClient:
         for (_, kind), result in zip(kinds, results, strict=True):
             out[kind] = [] if isinstance(result, BaseException) else result
         return out
+
+    # ------------------------------------------------------------- schema
+
+    async def resolve_kind(self, kind: str, api_version: str = "") -> str:
+        """The apiVersion this cluster actually serves for a kind.
+
+        Discovery knows; guessing does not. A hardcoded table covers the dozen
+        built-in kinds and is wrong for every CRD --- and this cluster serves
+        107 non-core API groups.
+        """
+        if api_version:
+            return api_version
+
+        def _search() -> str:
+            found = list(self.dynamic.resources.search(kind=kind))
+            if not found:
+                return ""
+
+            # Prefer a stable version over alpha/beta, then the shortest group.
+            def rank(resource: Any) -> tuple[int, int]:
+                version = str(getattr(resource, "group_version", ""))
+                unstable = 1 if ("alpha" in version or "beta" in version) else 0
+                return (unstable, len(version))
+
+            return str(getattr(sorted(found, key=rank)[0], "group_version", ""))
+
+        return await asyncio.to_thread(_search) or "v1"
+
+    async def openapi_index(self) -> dict[str, Any]:
+        if self._openapi_index is None:
+            self._openapi_index = await asyncio.to_thread(self._get_json, "/openapi/v3")
+        return self._openapi_index
+
+    async def schema_document(self, group_version: str) -> dict[str, Any]:
+        """The OpenAPI document for one API group, cached."""
+        if group_version in self._schema_cache:
+            return self._schema_cache[group_version]
+        index = await self.openapi_index()
+        key = f"apis/{group_version}" if "/" in group_version else f"api/{group_version}"
+        entry = (index.get("paths") or {}).get(key)
+        if entry is None:
+            raise KeyError(f"the cluster serves no schema for {group_version}")
+        document = await asyncio.to_thread(self._get_json, entry["serverRelativeURL"])
+        self._schema_cache[group_version] = document
+        return document
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        import json
+
+        response = self.dynamic.client.call_api(
+            path,
+            "GET",
+            auth_settings=["BearerToken"],
+            _preload_content=False,
+            _return_http_data_only=True,
+        )
+        parsed: dict[str, Any] = json.loads(response.data)
+        return parsed
 
     async def metrics(self, kind: str, namespace: str | None = None) -> list[dict[str, Any]]:
         if not await self.api_available(METRICS_API):
@@ -383,3 +443,93 @@ class K8sProvider:
             dynamic = await asyncio.to_thread(build_client, name or None, self.kubeconfigs)
             self._client = K8sClient(dynamic=dynamic, context=name)
         return self._client, self._client.context
+
+
+# ----------------------------------------------------------------- explain
+
+
+def _deref(schema: dict[str, Any], schemas: dict[str, Any]) -> dict[str, Any]:
+    """Follow $ref, including the allOf wrapper Kubernetes uses for objects."""
+    seen = 0
+    while seen < 10:
+        seen += 1
+        ref = schema.get("$ref")
+        if not ref and len(schema.get("allOf") or []) == 1:
+            ref = (schema["allOf"][0] or {}).get("$ref")
+        if not ref:
+            return schema
+        target = schemas.get(ref.split("/")[-1])
+        if target is None:
+            return schema
+        # Keep the outer description: it is the field-specific one.
+        merged = dict(target)
+        if schema.get("description"):
+            merged["description"] = schema["description"]
+        schema = merged
+    return schema
+
+
+def _type_of(schema: dict[str, Any]) -> str:
+    if ref := (schema.get("$ref") or ((schema.get("allOf") or [{}])[0] or {}).get("$ref")):
+        return str(ref.split(".")[-1])
+    kind = schema.get("type", "object")
+    if kind == "array":
+        item = schema.get("items") or {}
+        return f"[]{_type_of(item)}"
+    return str(kind)
+
+
+def find_schema(document: dict[str, Any], kind: str) -> tuple[str, dict[str, Any]] | None:
+    """Locate a kind's schema by its authoritative group-version-kind marker."""
+    schemas = (document.get("components") or {}).get("schemas") or {}
+    for name, schema in schemas.items():
+        for gvk in schema.get("x-kubernetes-group-version-kind") or []:
+            if gvk.get("kind") == kind:
+                return name, schema
+    # Fall back to a name match for schemas without the marker.
+    for name, schema in schemas.items():
+        if name.rsplit(".", 1)[-1] == kind:
+            return name, schema
+    return None
+
+
+def explain(document: dict[str, Any], kind: str, field_path: str = "") -> dict[str, Any]:
+    """`kubectl explain`, from the cluster's own schema.
+
+    Authoritative for this cluster at this version, and it covers custom
+    resources for free --- which no static reference can.
+    """
+    schemas = (document.get("components") or {}).get("schemas") or {}
+    found = find_schema(document, kind)
+    if found is None:
+        raise KeyError(f"no schema for kind {kind!r}")
+    name, schema = found
+    schema = _deref(schema, schemas)
+
+    walked = [kind]
+    for part in [p for p in field_path.split(".") if p]:
+        properties = schema.get("properties") or {}
+        if part not in properties:
+            options = ", ".join(sorted(properties)[:15]) or "none"
+            raise KeyError(f"{'.'.join(walked)} has no field {part!r}. Available: {options}")
+        schema = _deref(properties[part], schemas)
+        if schema.get("type") == "array":
+            schema = _deref(schema.get("items") or {}, schemas)
+        walked.append(part)
+
+    fields = {
+        child: {
+            "type": _type_of(value),
+            "required": child in (schema.get("required") or []),
+            "description": (_deref(value, schemas).get("description") or "").split(". ")[0][:200],
+        }
+        for child, value in (schema.get("properties") or {}).items()
+    }
+    return {
+        "path": ".".join(walked),
+        "schema": name,
+        "type": _type_of(schema),
+        "description": (schema.get("description") or "")[:400],
+        "required": schema.get("required") or [],
+        "fields": fields,
+    }

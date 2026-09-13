@@ -1,10 +1,10 @@
-"""Kubernetes read tools.
+"""Kubernetes tools.
 
 Every one returns a compact text summary for the model and, where it helps, a
 ``Visual`` for the human. The model never sees the chart --- that is what keeps
 a whole-cluster topology affordable in context.
 
-Read-only in this increment. Mutations are the next sub-phase.
+Read-only in this commit; the mutating tools land next.
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ class K8sListTool(K8sTool):
         client, context_name = resolved
 
         namespace = None if args.get("all_namespaces") else (args.get("namespace") or "default")
-        api_version = str(args.get("api_version") or _guess_api_version(kind))
+        api_version = await client.resolve_kind(kind, str(args.get("api_version") or ""))
         try:
             items = await client.list_kind(
                 api_version, kind, namespace, label_selector=args.get("label_selector")
@@ -544,10 +544,73 @@ class K8sTopologyTool(K8sTool):
         )
 
 
+class K8sExplainTool(K8sTool):
+    name: ClassVar[str] = "k8s_explain"
+    description: ClassVar[str] = (
+        "The schema for a resource kind or one of its fields, read from this "
+        "cluster's own OpenAPI. Use it BEFORE writing a manifest: it is "
+        "authoritative for this cluster's version and covers custom resources, "
+        "so it prevents apply failures rather than reacting to them. "
+        "Field paths are dotted, e.g. kind=Deployment field=spec.template.spec."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "description": "Deployment, Certificate, any CRD kind."},
+            "field": {"type": "string", "description": "Dotted path, e.g. spec.strategy."},
+            "api_version": {"type": "string", "description": "Only if the kind is ambiguous."},
+        },
+        "required": ["kind"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        kind = str(args.get("kind", "")).strip()
+        if not kind:
+            return ToolOutcome.error("kind is required")
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, _ = resolved
+
+        try:
+            api_version = await client.resolve_kind(kind, str(args.get("api_version") or ""))
+            document = await client.schema_document(api_version)
+            described = k8s_api.explain(document, kind, str(args.get("field") or ""))
+        except KeyError as exc:
+            return ToolOutcome.error(str(exc).strip("'\""), summary="unknown")
+        except Exception as exc:
+            return ToolOutcome.error(f"could not read the schema: {exc}", summary="failed")
+
+        lines = [f"{described['path']}  ({api_version})", f"  {described['description']}"]
+        if described["required"]:
+            lines.append(f"  REQUIRED: {', '.join(described['required'])}")
+        lines.append("")
+        for name, info in sorted(described["fields"].items()):
+            mark = "*" if info["required"] else " "
+            lines.append(f"  {mark} {name:<26} {info['type']:<28} {info['description']}")
+        if not described["fields"]:
+            lines.append("  (a scalar; no sub-fields)")
+        table = Table(
+            title=described["path"],
+            columns=["field", "type", "required", "description"],
+            rows=[
+                [n, i["type"], "yes" if i["required"] else "", i["description"]]
+                for n, i in sorted(described["fields"].items())
+            ],
+            caption=f"{api_version} — from the cluster's own OpenAPI schema",
+        )
+        return ToolOutcome(
+            content="\n".join(lines),
+            summary=f"{described['path']} ({len(described['fields'])} fields)",
+            visual=table if described["fields"] else None,
+        )
+
+
 def k8s_tools() -> list[BaseTool]:
     return [
         K8sContextsTool(),
         K8sApiResourcesTool(),
+        K8sExplainTool(),
         K8sListTool(),
         K8sEventsTool(),
         K8sLogsTool(),
@@ -556,20 +619,6 @@ def k8s_tools() -> list[BaseTool]:
         K8sStorageTool(),
         K8sTopologyTool(),
     ]
-
-
-def _guess_api_version(kind: str) -> str:
-    apps = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"}
-    batch = {"Job", "CronJob"}
-    if kind in apps:
-        return "apps/v1"
-    if kind in batch:
-        return "batch/v1"
-    if kind == "Ingress":
-        return "networking.k8s.io/v1"
-    if kind == "HorizontalPodAutoscaler":
-        return "autoscaling/v2"
-    return "v1"
 
 
 def sensitivity_for(kind: str) -> Sensitivity:
