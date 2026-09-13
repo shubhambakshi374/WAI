@@ -1230,7 +1230,7 @@ async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypa
 
     _no_credentials(monkeypatch)
 
-    async def rejecting(name, config):  # type: ignore[no-untyped-def]
+    async def rejecting(name, config, **kw):  # type: ignore[no-untyped-def]
         raise AuthenticationError("invalid x-api-key", provider=name)
 
     monkeypatch.setattr("wai.providers.registry.live_models", rejecting)
@@ -1278,7 +1278,7 @@ async def test_unmatched_filter_requeries_the_provider(monkeypatch) -> None:  # 
     calls: list[str] = []
     later = [*FAKE_MODELS, ModelInfo(id="claude-brand-new-6", provider="anthropic")]
 
-    async def growing(name, config):  # type: ignore[no-untyped-def]
+    async def growing(name, config, **kw):  # type: ignore[no-untyped-def]
         calls.append(name)
         return FAKE_MODELS if len(calls) == 1 else later
 
@@ -1303,7 +1303,7 @@ async def test_unmatched_filter_requeries_the_provider(monkeypatch) -> None:  # 
 
 
 def _returning(models):  # type: ignore[no-untyped-def]
-    async def _fetch(name, config):  # type: ignore[no-untyped-def]
+    async def _fetch(name, config, **kw):  # type: ignore[no-untyped-def]
         return list(models)
 
     return _fetch
@@ -1321,7 +1321,7 @@ async def test_model_picker_filters_and_falls_through_to_the_provider(monkeypatc
     )
     calls: list[str] = []
 
-    async def live(name, config):  # type: ignore[no-untyped-def]
+    async def live(name, config, **kw):  # type: ignore[no-untyped-def]
         calls.append(name)
         return [ModelInfo(id="claude-unreleased-9", provider="anthropic")]
 
@@ -1360,7 +1360,7 @@ async def test_model_picker_accepts_an_id_nothing_lists(monkeypatch) -> None:  #
         "wai.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
     )
 
-    async def nothing(name, config):  # type: ignore[no-untyped-def]
+    async def nothing(name, config, **kw):  # type: ignore[no-untyped-def]
         return []
 
     monkeypatch.setattr("wai.providers.registry.live_models", nothing)

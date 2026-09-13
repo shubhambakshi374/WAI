@@ -29,10 +29,15 @@ NATIVE_ENV_VARS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "azure_foundry": ("AZURE_OPENAI_API_KEY", "AZURE_AI_API_KEY"),
     "bedrock": (),
+    "local": (),
 }
 
 USES_CREDENTIAL_CHAIN = frozenset({"bedrock"})
 """Providers that authenticate through their cloud SDK, not an API key."""
+
+NEEDS_NO_API_KEY = frozenset({"bedrock", "local"})
+"""Asking these for a key is the wrong question: Bedrock uses the AWS chain,
+and a self-hosted endpoint usually has no auth at all."""
 
 
 @dataclass(frozen=True)
@@ -50,12 +55,23 @@ def _wai_env_var(provider: str) -> str:
 def get_api_key(provider: str) -> str | None:
     """Resolve a key: ``WAI_<PROVIDER>_API_KEY`` -> native env var -> keyring."""
     if provider in USES_CREDENTIAL_CHAIN:
+        # Bedrock authenticates through the AWS chain; a key here would be
+        # ignored by the SDK anyway, so returning one would only mislead.
         return None
+    if provider in NEEDS_NO_API_KEY:
+        # A self-hosted endpoint usually has no auth, but may have one --- so
+        # honour an explicitly exported key and never the keyring.
+        return _env_key(provider)
     for var in (_wai_env_var(provider), *NATIVE_ENV_VARS.get(provider, ())):
         value = os.environ.get(var)
         if value:
             return value
     return _keyring_get(provider)
+
+
+def _env_key(provider: str) -> str | None:
+    """A key only if one was explicitly exported; never from the keyring."""
+    return os.environ.get(_wai_env_var(provider))
 
 
 def require_api_key(provider: str) -> str:
@@ -98,6 +114,11 @@ def _keyring_get(provider: str) -> str | None:
 
 def credential_status(provider: str) -> CredentialStatus:
     """Report whether a provider can authenticate, without revealing the key."""
+    if provider == "local":
+        # There is no key to look for. Whether it is *usable* depends on a
+        # profile naming an endpoint, which this function cannot see --- so
+        # report the honest thing and let callers ask providers.local.
+        return CredentialStatus(provider, False, "", "needs an endpoint — /setup local")
     if provider in USES_CREDENTIAL_CHAIN:
         return _aws_status(provider)
     for var in (_wai_env_var(provider), *NATIVE_ENV_VARS.get(provider, ())):

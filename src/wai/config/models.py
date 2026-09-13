@@ -55,6 +55,12 @@ class Profile(BaseModel):
     max_tokens: int = 4096
     temperature: float | None = None
     system: str | None = None
+    base_url: str = ""
+    """For self-hosted endpoints. Required by the `local` provider."""
+    api_key_env: str = ""
+    """Environment variable holding the key, for endpoints that need one."""
+    supports_tools: bool | None = None
+    """Override capability detection. None means ask the server, or assume yes."""
 
 
 class ProtectedSettings(BaseModel):

@@ -8,11 +8,12 @@ overrides ``list_models``.
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from wai.config.models import Config
+from wai.config.models import Config, Profile
 from wai.config.secrets import get_api_key
 from wai.core.errors import ConfigError
 from wai.core.types import ModelInfo
@@ -29,6 +30,7 @@ _MODULES: dict[str, tuple[str, str]] = {
     "gemini": ("wai.providers.gemini", "GeminiProvider"),
     "mistral": ("wai.providers.mistral", "MistralProvider"),
     "bedrock": ("wai.providers.bedrock", "BedrockProvider"),
+    "local": ("wai.providers.local", "LocalProvider"),
 }
 
 PROVIDER_NAMES: tuple[str, ...] = tuple(_MODULES)
@@ -175,25 +177,39 @@ def known_models() -> list[ModelInfo]:
     return [model for provider in PROVIDER_NAMES for model in _CATALOG.get(provider, [])]
 
 
-def create_provider(name: str, config: Config) -> BaseProvider:
-    """Import and construct a provider adapter. Raises if the name is unknown."""
+def create_provider(name: str, config: Config, *, profile: Profile | None = None) -> BaseProvider:
+    """Import and construct a provider adapter. Raises if the name is unknown.
+
+    A profile may override the endpoint and supply its own key variable, which
+    is how one person holds an Ollama laptop and a vLLM cluster at once.
+    """
     entry = _MODULES.get(name)
     if entry is None:
         raise ConfigError(f"unknown provider {name!r} (known: {', '.join(PROVIDER_NAMES)})")
     module_path, class_name = entry
     module = importlib.import_module(module_path)
     cls: type[BaseProvider] = getattr(module, class_name)
-    return cls(api_key=get_api_key(name), settings=config.provider_settings(name))
+
+    settings = config.provider_settings(name)
+    api_key = get_api_key(name)
+    if profile is not None:
+        if profile.base_url:
+            settings = settings.model_copy(update={"base_url": profile.base_url})
+        if profile.api_key_env:
+            api_key = os.environ.get(profile.api_key_env) or api_key
+    return cls(api_key=api_key, settings=settings)
 
 
-async def live_models(name: str, config: Config) -> list[ModelInfo]:
+async def live_models(
+    name: str, config: Config, *, profile: Profile | None = None
+) -> list[ModelInfo]:
     """Ask the provider what it actually serves.
 
     Doubles as the credential health check: it is a real authenticated call,
     read-only and cheap, and a bad key fails here with the provider's own
     error rather than on the user's first real prompt.
     """
-    provider = create_provider(name, config)
+    provider = create_provider(name, config, profile=profile)
     try:
         return await provider.list_models()
     finally:
@@ -233,7 +249,12 @@ class ModelSearch:
 
 
 async def search_models(
-    provider: str, config: Config, known: Sequence[ModelInfo], needle: str
+    provider: str,
+    config: Config,
+    known: Sequence[ModelInfo],
+    needle: str,
+    *,
+    profile: Profile | None = None,
 ) -> ModelSearch:
     """Filter locally; ask the provider again when nothing matches.
 
@@ -250,7 +271,7 @@ async def search_models(
         return ModelSearch(matches=matches, known=pool)
 
     try:
-        pool = merge_models(pool, await live_models(provider, config))
+        pool = merge_models(pool, await live_models(provider, config, profile=profile))
     except Exception as exc:
         first = str(exc).strip().splitlines()
         return ModelSearch(matches=[], known=list(known), error=first[0][:160] if first else "")
