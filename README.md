@@ -150,7 +150,10 @@ max_file_bytes = 262144
 
 ## Slash commands
 
-Anything starting with `/` is a command, not a prompt.
+Anything starting with `/` is a command, not a prompt. **Type `/` and the list
+appears** --- filtered as you type, with `↑↓` to choose, `tab` to complete and
+`esc` to dismiss. Once you are past the command name it becomes a usage hint
+for the command you are writing.
 
 | | |
 |---|---|

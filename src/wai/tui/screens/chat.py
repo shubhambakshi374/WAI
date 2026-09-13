@@ -29,6 +29,7 @@ from wai.core.events import (
 )
 from wai.core.types import Message, Role, Usage
 from wai.tui.commands import dispatch, is_command
+from wai.tui.widgets.command_suggest import CommandSuggestions
 from wai.tui.widgets.composer import Composer
 from wai.tui.widgets.message_list import MessageBubble, MessageList
 from wai.tui.widgets.model_picker import ModelPicker
@@ -71,6 +72,7 @@ class ChatScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status")
         yield MessageList(id="transcript")
+        yield CommandSuggestions()
         yield Composer(id="composer")
         yield Footer()
 
@@ -84,12 +86,20 @@ class ChatScreen(Screen[None]):
         for message in app.session.messages:
             if message.text or message.reasoning:
                 await transcript.add_message(message)
-        self.query_one(Composer).focus()
+        composer = self.query_one(Composer)
+        composer.suggestions = self.query_one(CommandSuggestions)
+        composer.focus()
 
     # ------------------------------------------------------------------ sending
 
+    @on(Composer.Changed)
+    def _on_composer_changed(self, event: Composer.Changed) -> None:
+        """Offer commands as `/` is typed, so you need not already know them."""
+        self.query_one(CommandSuggestions).update_for(self.wai.commands, event.text_area.text)
+
     @on(Composer.Submitted)
     async def _on_submit(self, event: Composer.Submitted) -> None:
+        self.query_one(CommandSuggestions).hide()
         if is_command(event.text):
             # A leading slash is a command, never a prompt.
             self.run_command(event.text)

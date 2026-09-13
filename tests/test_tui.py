@@ -900,3 +900,142 @@ async def test_unprotected_target_still_approves_on_a_keypress() -> None:
         await pilot.press("y")
         await pilot.pause()
         assert captured == [Decision.ALLOW]
+
+
+# ------------------------------------------------------- command suggestions
+
+
+def _suggest(pilot):  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.command_suggest import CommandSuggestions
+
+    return pilot.app.screen.query_one(CommandSuggestions)
+
+
+async def _type(pilot, text: str):  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.composer import Composer
+
+    composer = pilot.app.screen.query_one(Composer)
+    composer.text = text
+    await pilot.pause()
+    await pilot.pause()
+    return composer
+
+
+async def test_a_bare_slash_offers_every_command() -> None:
+    """The point of the popup: you should not need to know the names already."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _type(pilot, "/")
+        panel = _suggest(pilot)
+        assert panel.visible_now
+        names = {s.command.name for s in panel.suggestions}
+        assert {"help", "kube", "login", "provider", "model", "tools"} <= names
+
+
+async def test_suggestions_filter_as_you_type() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _type(pilot, "/k")
+        assert {s.command.name for s in _suggest(pilot).suggestions} == {"key", "kube"}
+        await _type(pilot, "/ku")
+        assert [s.command.name for s in _suggest(pilot).suggestions] == ["kube"]
+
+
+async def test_one_character_does_not_match_on_summaries() -> None:
+    """`/k` must not offer `model` because its summary contains "Pick"."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _type(pilot, "/k")
+        assert "model" not in {s.command.name for s in _suggest(pilot).suggestions}
+
+
+async def test_no_popup_for_a_path_or_ordinary_prompt() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        for text in ("explain /etc/hosts", "what does / mean", "/xyzzy"):
+            await _type(pilot, text)
+            assert not _suggest(pilot).visible_now, text
+
+
+async def test_past_the_command_name_it_becomes_a_usage_hint() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _type(pilot, "/kube ")
+        panel = _suggest(pilot)
+        assert panel.suggestions == [], "arguments are being typed, not a command name"
+        assert panel.visible_now
+        hint = str(pilot.app.screen.query_one("#suggestion-hint").render())
+        assert "use <ctx>" in hint
+
+
+async def test_tab_completes_the_highlighted_command() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        composer = await _type(pilot, "/ku")
+        await pilot.press("tab")
+        await pilot.pause()
+        assert composer.text == "/kube "
+
+
+async def test_arrows_move_the_highlight_and_enter_completes() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        composer = await _type(pilot, "/")
+        await pilot.press("down")
+        await pilot.pause()
+        chosen = _suggest(pilot).highlighted
+        assert chosen is not None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == f"/{chosen.command.name} "
+
+
+async def test_a_fully_typed_command_runs_on_enter() -> None:
+    """Completing an already-complete command would make every command
+    take two Enters, which is the wrong trade."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        composer = await _type(pilot, "/help")
+        await pilot.press("enter")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert composer.text == "", "it was sent, not completed"
+        assert "Commands:" in _notices(pilot)
+
+
+async def test_escape_dismisses_but_keeps_what_was_typed() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        composer = await _type(pilot, "/k")
+        assert _suggest(pilot).visible_now
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not _suggest(pilot).visible_now
+        assert composer.text == "/k"
+
+
+async def test_arrows_still_move_the_cursor_when_no_popup_is_open() -> None:
+    """The popup must not steal navigation from ordinary editing."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        composer = await _type(pilot, "line one")
+        composer.insert("\n")
+        composer.insert("line two")
+        await pilot.pause()
+        before = composer.cursor_location
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.cursor_location != before, "up should move the cursor"
+
+
+async def test_sending_a_prompt_hides_any_popup() -> None:
+    provider = FakeProvider()
+    app = make_app(provider)
+    async with app.run_test() as pilot:
+        await _type(pilot, "/")
+        assert _suggest(pilot).visible_now
+        await _type(pilot, "hello there")
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert not _suggest(pilot).visible_now
+        assert len(provider.calls) == 1
