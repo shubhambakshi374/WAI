@@ -82,6 +82,22 @@ class OpenAIProvider(BaseProvider):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._client: AsyncOpenAI | None = None
+        self._http: Any = None
+
+    def _http_client(self) -> Any:
+        """Own the transport rather than letting the SDK make one.
+
+        With the SDK's own client, httpcore's connection-pool async generator
+        is finalised at interpreter shutdown and raises "generator didn't stop
+        after athrow()", printing a traceback after a perfectly good answer.
+        Reproducible with the SDK alone, so this is a workaround, not a fix ---
+        owning the client lets us close it deterministically.
+        """
+        import httpx
+
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=self.settings.timeout)
+        return self._http
 
     def _build_client(self) -> AsyncOpenAI:
         from openai import AsyncOpenAI
@@ -94,6 +110,7 @@ class OpenAIProvider(BaseProvider):
             timeout=self.settings.timeout,
             max_retries=0,  # wai.core.retry owns retry policy
             default_headers=self.default_headers(),
+            http_client=self._http_client(),
         )
 
     def default_headers(self) -> dict[str, str] | None:
@@ -108,6 +125,9 @@ class OpenAIProvider(BaseProvider):
         if self._client is not None:
             await self._client.close()
             self._client = None
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     async def list_models(self) -> list[ModelInfo]:
         from wai.providers.registry import catalog_for
@@ -174,53 +194,60 @@ class OpenAIProvider(BaseProvider):
         calls: dict[int, dict[str, str]] = {}
         seen: set[int] = set()
 
-        async for chunk in raw_stream:
-            if not started:
-                started = True
-                yield MessageStart(model=getattr(chunk, "model", request.model))
+        # Close the response explicitly. Left to interpreter shutdown, httpcore's
+        # async generator raises "generator didn't stop after athrow()" and prints
+        # a traceback after a perfectly good answer.
+        try:
+            async for chunk in raw_stream:
+                if not started:
+                    started = True
+                    yield MessageStart(model=getattr(chunk, "model", request.model))
 
-            if getattr(chunk, "usage", None):
-                usage = _to_usage(chunk.usage)
-                yield UsageUpdate(usage=usage)
+                if getattr(chunk, "usage", None):
+                    usage = _to_usage(chunk.usage)
+                    yield UsageUpdate(usage=usage)
 
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            if delta is not None:
-                if delta.content:
-                    yield TextDelta(text=delta.content)
-                for field in _REASONING_FIELDS:
-                    text = getattr(delta, field, None)
-                    if text:
-                        yield ReasoningDelta(text=text)
-                        break
-                for call in delta.tool_calls or []:
-                    index = call.index
-                    entry = calls.setdefault(index, {"id": "", "name": "", "args": ""})
-                    if call.id:
-                        entry["id"] = call.id
-                    function = getattr(call, "function", None)
-                    if function is not None and function.name:
-                        entry["name"] = function.name
-                    if index not in seen and entry["id"] and entry["name"]:
-                        seen.add(index)
-                        yield ToolCallStart(index=index, id=entry["id"], name=entry["name"])
-                    if function is not None and function.arguments:
-                        entry["args"] += function.arguments
-                        yield ToolCallDelta(index=index, partial_json=function.arguments)
+                if delta is not None:
+                    if delta.content:
+                        yield TextDelta(text=delta.content)
+                    for field in _REASONING_FIELDS:
+                        text = getattr(delta, field, None)
+                        if text:
+                            yield ReasoningDelta(text=text)
+                            break
+                    for call in delta.tool_calls or []:
+                        index = call.index
+                        entry = calls.setdefault(index, {"id": "", "name": "", "args": ""})
+                        if call.id:
+                            entry["id"] = call.id
+                        function = getattr(call, "function", None)
+                        if function is not None and function.name:
+                            entry["name"] = function.name
+                        if index not in seen and entry["id"] and entry["name"]:
+                            seen.add(index)
+                            yield ToolCallStart(index=index, id=entry["id"], name=entry["name"])
+                        if function is not None and function.arguments:
+                            entry["args"] += function.arguments
+                            yield ToolCallDelta(index=index, partial_json=function.arguments)
 
-            if choice.finish_reason:
-                stop_reason = _FINISH_REASONS.get(choice.finish_reason, StopReason.END_TURN)
-                for index, entry in sorted(calls.items()):
-                    yield ToolCallEnd(
-                        index=index,
-                        id=entry["id"],
-                        name=entry["name"],
-                        input=_loads(entry["args"]),
-                    )
-                calls.clear()
+                if choice.finish_reason:
+                    stop_reason = _FINISH_REASONS.get(choice.finish_reason, StopReason.END_TURN)
+                    for index, entry in sorted(calls.items()):
+                        yield ToolCallEnd(
+                            index=index,
+                            id=entry["id"],
+                            name=entry["name"],
+                            input=_loads(entry["args"]),
+                        )
+                    calls.clear()
+
+        finally:
+            await raw_stream.close()
 
         yield MessageEnd(stop_reason=stop_reason, usage=usage)
 

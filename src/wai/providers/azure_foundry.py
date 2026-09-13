@@ -46,6 +46,7 @@ class AzureFoundryProvider(OpenAIProvider):
             timeout=self.settings.timeout,
             max_retries=0,
             default_headers=self.settings.extra_headers or None,
+            http_client=self._http_client(),
         )
 
     async def list_models(self) -> list[ModelInfo]:  # type: ignore[override]

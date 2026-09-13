@@ -39,8 +39,15 @@ from wai.providers.openrouter import OpenRouterProvider
 
 
 class _AsyncList:
+    """Models the SDK's AsyncStream, close() included --- the adapter closes
+    it explicitly to avoid httpcore's teardown traceback."""
+
     def __init__(self, items: list[Any]) -> None:
         self.items = items
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
     def __aiter__(self) -> Any:
         async def gen() -> Any:
@@ -558,3 +565,39 @@ async def test_bedrock_stream_iteration_does_not_block_the_loop() -> None:
 
     assert seen and all(tid != main_thread for tid in seen), "boto3 iterated on the event loop"
     assert ticks > 0, "event loop was starved during streaming"
+
+
+async def test_the_stream_is_closed_explicitly(openai_provider: OpenAIProvider) -> None:
+    """Left to interpreter shutdown, httpcore's async generator raises
+    "generator didn't stop after athrow()" and prints a traceback after a
+    perfectly good answer. Reproducible with the SDK alone."""
+    stream = _AsyncList([_oa_chunk("hi"), _oa_chunk(finish="stop")])
+
+    async def create(**body: Any) -> Any:
+        return stream
+
+    openai_provider._get_client = lambda: ns(chat=ns(completions=ns(create=create)))  # type: ignore[method-assign]
+    await _collect(openai_provider)
+    assert stream.closed, "the response must be closed by the adapter"
+
+
+async def test_the_stream_is_closed_even_when_iteration_fails(
+    openai_provider: OpenAIProvider,
+) -> None:
+    class Exploding(_AsyncList):
+        def __aiter__(self) -> Any:
+            async def gen() -> Any:
+                yield _oa_chunk("partial")
+                raise RuntimeError("connection dropped")
+
+            return gen()
+
+    stream = Exploding([])
+
+    async def create(**body: Any) -> Any:
+        return stream
+
+    openai_provider._get_client = lambda: ns(chat=ns(completions=ns(create=create)))  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await _collect(openai_provider)
+    assert stream.closed
