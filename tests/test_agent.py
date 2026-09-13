@@ -101,7 +101,7 @@ def session(tree: Path) -> Session:
 
 @pytest.fixture
 def registry():  # type: ignore[no-untyped-def]
-    return default_registry()
+    return default_registry(kubernetes=False)
 
 
 async def drive(provider, session, registry, ctx, **kw):  # type: ignore[no-untyped-def]

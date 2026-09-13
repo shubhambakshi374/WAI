@@ -35,7 +35,7 @@ def tree(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def registry():  # type: ignore[no-untyped-def]
-    return default_registry()
+    return default_registry(kubernetes=False)
 
 
 def context(tree: Path, policy: object = None) -> ToolContext:

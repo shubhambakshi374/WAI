@@ -34,7 +34,8 @@ def ctx(tree: Path) -> ToolContext:
 
 @pytest.fixture
 def registry():  # type: ignore[no-untyped-def]
-    return default_registry()
+    # Filesystem tools only: the Kubernetes set has its own test module.
+    return default_registry(kubernetes=False)
 
 
 async def run(registry, name, args, ctx):  # type: ignore[no-untyped-def]
@@ -297,7 +298,16 @@ def test_registry_splits_read_only_from_mutating(registry) -> None:  # type: ign
 def test_registry_can_omit_the_write_tools() -> None:
     from wai.tools import default_registry as make
 
-    assert make(writes=False).names == ["glob", "grep", "list_dir", "read_file"]
+    assert make(writes=False, kubernetes=False).names == ["glob", "grep", "list_dir", "read_file"]
+
+
+def test_kubernetes_tools_register_only_when_the_sdk_is_present() -> None:
+    from wai.tools import default_registry as make
+
+    with_k8s = make(kubernetes=True).names
+    without = make(kubernetes=False).names
+    assert any(n.startswith("k8s_") for n in with_k8s)
+    assert not any(n.startswith("k8s_") for n in without)
 
 
 def test_tool_defs_are_stable_and_schema_shaped(registry) -> None:  # type: ignore[no-untyped-def]

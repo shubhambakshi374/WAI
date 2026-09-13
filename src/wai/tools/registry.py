@@ -73,9 +73,23 @@ class ToolRegistry:
             return ToolOutcome.error(f"{name} failed: {exc}", summary="failed")
 
 
-def default_registry(*, writes: bool = True) -> ToolRegistry:
-    """The filesystem tool set. Every write tool goes through the approval gate."""
+def default_registry(*, writes: bool = True, kubernetes: bool | None = None) -> ToolRegistry:
+    """The tool set for a session.
+
+    Kubernetes tools register only when the SDK is installed, so a missing
+    extra is a visible absence rather than an import error at call time.
+    """
     tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
     if writes:
         tools += [WriteFileTool(), EditFileTool(), DeletePathTool()]
+
+    if kubernetes is None:
+        from wai.cloud.base import integration
+
+        entry = integration("k8s")
+        kubernetes = bool(entry and entry.available)
+    if kubernetes:
+        from wai.tools.k8s import k8s_tools
+
+        tools += list(k8s_tools())
     return ToolRegistry(tools)
