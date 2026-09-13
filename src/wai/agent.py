@@ -58,7 +58,7 @@ def build_system_prompt(session: Session, registry: ToolRegistry) -> str | None:
     parts: list[str] = []
     if session.system:
         parts.append(session.system)
-    if session.tools_enabled and len(registry):
+    if session.tools_enabled and session.model_supports_tools and len(registry):
         parts.append(
             "You have read-only access to a workspace on the user's machine, "
             f"rooted at {session.workspace_root}.\n"
@@ -66,6 +66,12 @@ def build_system_prompt(session: Session, registry: ToolRegistry) -> str | None:
             "Paths are relative to the workspace root. You cannot read outside it, "
             "and credential files (.env, private keys, and similar) are blocked by "
             "design. Prefer glob and grep to locate code before reading whole files."
+        )
+    if session.tools_enabled and not session.model_supports_tools:
+        parts.append(
+            f"The selected model ({session.model}) does not support tool calling, "
+            "so you have no filesystem or Kubernetes tools in this session. Answer "
+            "from the conversation, and say when something would need a tool."
         )
     return "\n\n".join(parts) if parts else None
 
@@ -92,7 +98,10 @@ async def run_agent(
     Appends every message it produces to ``session`` and yields the wider
     ``AgentEvent`` union so callers can render tool activity.
     """
-    tool_defs = registry.to_tool_defs() if session.tools_enabled else []
+    # A model that cannot call tools produces hallucinated call syntax or a
+    # hard error when offered them. Declaring none is the honest degradation.
+    offering_tools = session.tools_enabled and session.model_supports_tools
+    tool_defs = registry.to_tool_defs() if offering_tools else []
     system = build_system_prompt(session, registry)
 
     for iteration in range(max_iterations):

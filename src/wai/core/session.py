@@ -21,6 +21,10 @@ class Session(BaseModel):
     provider: str = ""
     model: str = ""
     system: str | None = None
+    base_url: str = ""
+    """Self-hosted endpoint, persisted so --resume reconnects to the same one."""
+    model_supports_tools: bool = True
+    """False disables tool declarations entirely --- see agent.build_system_prompt."""
     workspace_root: str = ""
     """Persisted so --resume reconstructs the same workspace."""
     tools_enabled: bool = True
