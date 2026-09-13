@@ -5,9 +5,9 @@ LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
 > **Status: Phase 2b.** Streaming chat across all eight providers; filesystem
-> tools behind a diff-first approval gate; and **Kubernetes reads that draw
-> you a picture** --- usage charts, storage, and a topology view. AWS, Azure
-> and GCP tools land in 2c–2e.
+> tools behind a diff-first approval gate; and **Kubernetes** --- reads that
+> draw you a picture, and changes gated on a server-side dry run. AWS, Azure
+> and GCP land in 2c–2e.
 
 ## Install
 
@@ -181,6 +181,48 @@ Read-only in this release. Ask a question, get a chart:
 ├─ · → selects 2 Pods
 └─ · ← routes-to by Ingress/public
 ```
+
+### Changing things
+
+`k8s_apply`, `k8s_delete`, `k8s_scale` and `k8s_rollout` each run a
+**server-side dry run first**, and the approval prompt shows what the API
+server says will happen --- not what the model claims will happen. A manifest
+the server rejects never reaches you: the error comes back as a schema
+correction instead.
+
+Every prompt names the blast radius (`cluster AKS_QAM · namespace shop`), and
+a **protected** context demands you type its name rather than press a key:
+
+```
+DELETE — approval required
+Deployment/web
+cluster AKS_EU_PROD · namespace payments
+⚠ PROTECTED ENVIRONMENT — type  AKS_EU_PROD  to confirm
+✓ server-side dry run succeeded: the delete is permitted
+nothing here recreates it; deletion is permanent
+```
+
+There is no "always allow" on a protected target. Set `mode = "deny"` to
+refuse outright instead.
+
+### Knowing the schema before writing it
+
+`k8s_explain` reads **your cluster's own OpenAPI**, the same source
+`kubectl explain` uses:
+
+```
+> k8s_explain kind=Certificate field=spec
+
+Certificate.spec  (cert-manager.io/v1)
+  REQUIRED: issuerRef, secretName
+  * secretName    string    Name of the Secret resource to store the certificate in
+    commonName    string    Requested common name X509 certificate subject attribute
+```
+
+That is authoritative for your cluster at your version and covers custom
+resources for free --- a static reference could not know your cluster serves
+107 non-core API groups. `apiVersion` is resolved from discovery too, so
+`Certificate` finds `cert-manager.io/v1` without anyone hardcoding it.
 
 `k8s_topology` follows `ownerReferences` for the tree and infers the rest ---
 Service selectors, Ingress backends, volume mounts, ConfigMap references, HPA
@@ -362,7 +404,7 @@ Snapshot tests render the TUI to SVG and will churn when Textual is upgraded:
 - **Phase 1.5 — the workspace and read-only tools.** ✅ Agent loop, `read_file`/`list_dir`/`glob`/`grep`, sandboxed.
 - **Phase 1.75 — writes behind an approval gate.** ✅ `write_file`/`edit_file`/`delete_path`, diff-first prompts.
 - **Phase 2a — DevOps foundations.** ✅ Cloud auth, contexts, redaction, protected environments, slash commands.
-- **Phase 2b — Kubernetes, visualised.** ✅ Topology, usage, storage, metrics. Reads only.
+- **Phase 2b — Kubernetes.** ✅ Topology, usage, storage, metrics, schema lookup, and changes behind a dry-run gate.
 - **Phase 2c–2e —** AWS, Azure/GCP, and the justified CLI fallback.
 - **Phase 3 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
 - **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
