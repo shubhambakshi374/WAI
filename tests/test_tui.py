@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import ClassVar
 
 from textual.widgets import Label
 from textual.worker import WorkerCancelled
@@ -703,3 +704,109 @@ def _notices(pilot) -> str:  # type: ignore[no-untyped-def]
     from wai.tui.widgets.message_list import NoticeBubble
 
     return "\n".join(n.text for n in pilot.app.screen.query(NoticeBubble))
+
+
+# ------------------------------------------------------------------- visuals
+
+
+def _visual_events(call_id: str = "v1"):  # type: ignore[no-untyped-def]
+    from wai.core.events import ToolCallEnd, ToolCallStart
+    from wai.core.types import StopReason
+
+    return [
+        MessageStart(model="fake-1"),
+        ToolCallStart(index=0, id=call_id, name="k8s_topology"),
+        ToolCallEnd(index=0, id=call_id, name="k8s_topology", input={}),
+        MessageEnd(stop_reason=StopReason.TOOL_USE, usage=Usage(output_tokens=1)),
+    ]
+
+
+class ChartingProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.turn = 0
+
+    async def stream(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        self.turn += 1
+        events = _visual_events() if self.turn == 1 else default_events("Done.")
+        for event in events:
+            yield event
+
+
+class ChartTool:
+    """A stand-in k8s_topology that returns a graph without a cluster."""
+
+    name = "k8s_topology"
+    description = "topology"
+    input_schema: ClassVar[dict] = {}
+    read_only = True
+
+    async def run(self, args, ctx):  # type: ignore[no-untyped-def]
+        from wai.core.visuals import GraphEdge, GraphNode, ResourceGraph
+        from wai.tools.base import ToolOutcome
+
+        graph = ResourceGraph(
+            title="shop",
+            nodes=[
+                GraphNode(id="d", kind="Deployment", name="web", status="2/2 ready"),
+                GraphNode(id="p", kind="Pod", name="web-aaa", status="Running"),
+            ],
+            edges=[GraphEdge(source="d", target="p", relation="owns")],
+        )
+        return ToolOutcome(content=graph.to_text(), summary="2 resources", visual=graph)
+
+
+def _charting_app(provider):  # type: ignore[no-untyped-def]
+    from wai.tools.registry import ToolRegistry
+
+    config = Config()
+    config.ui.stream_flush_ms = 10
+    app = WaiApp(config=config, provider=provider)
+    app.registry = ToolRegistry([ChartTool()])  # type: ignore[list-item]
+    return app
+
+
+async def test_a_tool_visual_renders_inline() -> None:
+    from wai.tui.widgets.visuals import VisualPanel
+
+    app = _charting_app(ChartingProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "show me the cluster")
+        await _settle(pilot)
+        panels = pilot.app.screen.query(VisualPanel)
+        assert len(panels) == 1
+
+
+async def test_the_chart_is_not_sent_to_the_model() -> None:
+    """The economy of the whole design: charts cost no context."""
+    provider = ChartingProvider()
+    app = _charting_app(provider)
+    async with app.run_test() as pilot:
+        await _send(pilot, "show me the cluster")
+        await _settle(pilot)
+
+    # The second request replays the conversation; no visual may appear in it.
+    replayed = provider.calls[-1]
+    serialised = str([m.model_dump() for m in replayed.messages])
+    assert "visual" not in serialised
+    assert "ResourceGraph" not in serialised
+
+
+async def test_enter_expands_a_visual_full_screen() -> None:
+    from wai.tui.widgets.visuals import VisualPanel, VisualScreen
+
+    app = _charting_app(ChartingProvider())
+    async with app.run_test() as pilot:
+        await _send(pilot, "show me the cluster")
+        await _settle(pilot)
+
+        pilot.app.screen.query(VisualPanel).first().focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, VisualScreen)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, VisualScreen)

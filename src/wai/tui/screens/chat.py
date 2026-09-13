@@ -34,6 +34,7 @@ from wai.tui.widgets.message_list import MessageBubble, MessageList
 from wai.tui.widgets.model_picker import ModelPicker
 from wai.tui.widgets.status_bar import StatusBar
 from wai.tui.widgets.tool_call import ToolCallWidget
+from wai.tui.widgets.visuals import VisualPanel
 
 if TYPE_CHECKING:
     from wai.tui.app import WaiApp
@@ -154,7 +155,7 @@ class ChatScreen(Screen[None]):
                         await self._flush()
                         await self._add_tool(event)
                     case ToolFinished():
-                        self._finish_tool(event)
+                        await self._finish_tool(event)
                     case ToolDenied():
                         self.notify(f"Rejected {event.name}.", severity="warning")
                     case UsageUpdate():
@@ -234,10 +235,15 @@ class ChatScreen(Screen[None]):
         await self.query_one(MessageList).mount(widget)
         self.query_one(MessageList).scroll_end(animate=False)
 
-    def _finish_tool(self, event: ToolFinished) -> None:
+    async def _finish_tool(self, event: ToolFinished) -> None:
         widget = self._tools.get(event.id)
         if widget is not None:
             widget.finish(summary=event.summary, is_error=event.is_error)
+        if event.visual is not None:
+            # The chart is for the human; the model only ever saw the summary.
+            transcript = self.query_one(MessageList)
+            await transcript.mount(VisualPanel(event.visual))
+            transcript.scroll_end(animate=False)
 
     async def _flush(self) -> None:
         """Push buffered deltas into the transcript. Cheap when nothing changed."""
