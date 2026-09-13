@@ -314,7 +314,7 @@ def test_integrations_report_availability_and_install_hints() -> None:
     assert {i.name for i in INTEGRATIONS} == {"k8s", "aws", "azure", "gcp"}
     entry = integration("k8s")
     assert entry is not None
-    assert "wai[k8s]" in entry.install_hint
+    assert "--extra k8s" in entry.install_hint
 
 
 def test_missing_integration_is_reported_not_crashed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -322,7 +322,7 @@ def test_missing_integration_is_reported_not_crashed(monkeypatch: pytest.MonkeyP
 
     absent = Integration("nope", "nope", ("definitely_not_a_module",), "Nothing")
     assert absent.available is False
-    assert "wai[nope]" in absent.install_hint
+    assert "--extra nope" in absent.install_hint
 
 
 def test_auth_status_never_needs_the_network(monkeypatch: pytest.MonkeyPatch) -> None:

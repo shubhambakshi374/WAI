@@ -102,7 +102,9 @@ class Integration:
 
     @property
     def install_hint(self) -> str:
-        return f"uv tool install 'wai[{self.extra}]'"
+        # Not `wai[extra]`: WAI is not on PyPI, so that command fails. These
+        # two are what actually work from a checkout today.
+        return f"uv sync --extra {self.extra}   (or: uv tool install '.[{self.extra}]')"
 
 
 def _all_importable(modules: tuple[str, ...]) -> bool:

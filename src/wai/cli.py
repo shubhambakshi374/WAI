@@ -454,6 +454,17 @@ def tools_list() -> None:
     for tool in sorted(registry, key=lambda t: t.name):
         access = "read-only" if tool.read_only else "needs approval"
         typer.echo(f"  {tool.name:<12} [{access:^14}]  {tool.description.split('.')[0]}.")
+    # An uninstalled integration must be a visible, fixable state --- not a
+    # tool that silently is not there. The /tools slash command says the same.
+    from wai.cloud.base import missing_integrations
+
+    if missing := missing_integrations():
+        typer.echo("\nnot installed:")
+        for entry in missing:
+            typer.secho(
+                f"  {entry.name:<6} {entry.summary:<26} {entry.install_hint}",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
     if config.workspace.deny_secrets:
         typer.echo(
             "\ncredential-shaped files (.env, private keys) are blocked inside the workspace"
