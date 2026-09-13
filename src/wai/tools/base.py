@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
+from wai.core.visuals import Visual
 from wai.tools.approval import ApprovalPolicy, DenyAll
 from wai.workspace import Workspace
 
@@ -19,6 +20,20 @@ DEFAULT_MAX_FILE_BYTES = 256 * 1024
 DEFAULT_MAX_LINES = 2000
 DEFAULT_MAX_ENTRIES = 500
 DEFAULT_MAX_MATCHES = 200
+
+
+@dataclass
+class CloudContext:
+    """Cluster and cloud state the tools operate against."""
+
+    k8s: Any = None
+    """A ``wai.cloud.k8s.K8sProvider``; typed loosely so ``tools.base`` does
+    not import an optional SDK path at module scope."""
+    redact_secrets: bool = True
+    kubeconfigs: tuple[str, ...] = ()
+    kube_context: str | None = None
+    protection: Any = None
+    """A ``wai.cloud.base.ProtectionRules``."""
 
 
 @dataclass
@@ -31,6 +46,7 @@ class ToolContext:
 
     workspace: Workspace
     approvals: ApprovalPolicy = field(default_factory=DenyAll)
+    cloud: CloudContext = field(default_factory=lambda: CloudContext())
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     max_lines: int = DEFAULT_MAX_LINES
     max_entries: int = DEFAULT_MAX_ENTRIES
@@ -46,6 +62,9 @@ class ToolOutcome:
     summary: str = ""
     denied: bool = False
     """True when the user rejected it, as opposed to the tool failing."""
+    visual: Visual | None = None
+    """For the human only. Never reaches the model --- that is the point:
+    a cluster topology renders richly while costing no context."""
 
     @classmethod
     def error(cls, message: str, *, summary: str = "") -> ToolOutcome:

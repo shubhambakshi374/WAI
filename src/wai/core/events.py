@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 from wai.core.types import StopReason, Usage
+from wai.core.visuals import Visual
 
 
 class MessageStart(BaseModel):
@@ -91,6 +92,8 @@ class ToolFinished(BaseModel):
     summary: str = ""
     is_error: bool = False
     duration_ms: int = 0
+    visual: Visual | None = None
+    """Rendered for the human; deliberately absent from the model's transcript."""
 
 
 class ToolDenied(BaseModel):

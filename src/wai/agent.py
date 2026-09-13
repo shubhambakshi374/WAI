@@ -200,6 +200,7 @@ async def _execute_all(
                 summary=outcome.summary,
                 is_error=outcome.is_error,
                 duration_ms=timings[index],
+                visual=outcome.visual,
             )
         )
     return batch
