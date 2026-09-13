@@ -171,9 +171,12 @@ for the command you are writing.
 | | |
 |---|---|
 | `/help` | List commands |
-| `/provider` · `/provider use <name>` | LLM provider status, or switch |
+| `/setup [<provider>]` | Add a provider: key, health check, default model |
+| `/provider` · `/providers` | Interactive picker. Unconfigured providers open setup |
+| `/provider use <name>` | Switch directly |
 | `/key <provider>` · `/key rm <provider>` | Store a key (masked, straight to the OS keyring) |
-| `/model` · `/model <id>` · `/models` | Pick or set a model |
+| `/model` · `/models` | Searchable picker — unlisted ids are looked up live |
+| `/model <id>` | Set one directly |
 | `/login` · `/login <cloud>` | Cloud auth status, or sign in |
 | `/kube` · `/kube use <ctx>` · `/kube add <path>` | Kubernetes contexts |
 | `/tools` | Tools, installed integrations, standing approvals |

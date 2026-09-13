@@ -35,6 +35,19 @@ async def cmd_help(app: WaiApp, args: list[str]) -> CommandResult:
 async def cmd_provider(app: WaiApp, args: list[str]) -> CommandResult:
     from wai.config.secrets import credential_status
     from wai.providers import PROVIDER_NAMES
+    from wai.tui.widgets.provider_picker import ProviderPicker
+
+    if not args:
+        # A list you cannot act on is a dead end. Choosing a configured
+        # provider switches; choosing an unconfigured one opens its setup.
+        chosen = await app.push_screen_wait(ProviderPicker())
+        if not chosen:
+            return CommandResult.silent()
+        if not credential_status(chosen).available:
+            app.open_setup(chosen)
+            return CommandResult.silent()
+        await app.switch_provider(chosen)
+        return CommandResult(f"Switched to {chosen} ({app.session.model}).")
 
     if args and args[0] == "use":
         if len(args) < 2:
@@ -49,14 +62,7 @@ async def cmd_provider(app: WaiApp, args: list[str]) -> CommandResult:
         await app.switch_provider(name)
         return CommandResult(f"Switched to {name} ({app.session.model}).")
 
-    rows = ["Providers:"]
-    for name in PROVIDER_NAMES:
-        status = credential_status(name)
-        mark = "●" if status.available else "○"
-        current = "  ← current" if name == app.session.provider else ""
-        rows.append(f"  {mark} {name:<15} {status.source:<12}{current}")
-    rows.append("\n  ● configured   ○ no credentials — /key <provider> to add one")
-    return CommandResult("\n".join(rows), title="Providers")
+    return CommandResult.error(f"usage: /provider  or  /provider use <name>. Got: {args}")
 
 
 async def cmd_key(app: WaiApp, args: list[str]) -> CommandResult:
@@ -101,10 +107,14 @@ async def cmd_setup(app: WaiApp, args: list[str]) -> CommandResult:
 async def cmd_model(app: WaiApp, args: list[str]) -> CommandResult:
     from wai.core.types import ModelInfo
     from wai.providers.registry import known_models
+    from wai.tui.widgets.model_picker import ModelPicker
 
     if not args:
-        app.open_model_picker()
-        return CommandResult.silent()
+        chosen = await app.push_screen_wait(ModelPicker())
+        if chosen is None:
+            return CommandResult.silent()
+        await app.switch_model(chosen)
+        return CommandResult(f"Model set to {chosen.id} ({chosen.provider}).")
 
     wanted = args[0]
     match = next((m for m in known_models() if m.id == wanted), None)
@@ -114,20 +124,6 @@ async def cmd_model(app: WaiApp, args: list[str]) -> CommandResult:
         match = ModelInfo(id=wanted, provider=app.session.provider)
     await app.switch_model(match)
     return CommandResult(f"Model set to {match.id} ({match.provider}).")
-
-
-async def cmd_models(app: WaiApp, args: list[str]) -> CommandResult:
-    from wai.providers.registry import catalog_for
-
-    provider = args[0] if args else app.session.provider
-    models = catalog_for(provider)
-    if not models:
-        return CommandResult.warn(
-            f"No catalog entries for {provider}. Try: wai providers models {provider} --live"
-        )
-    rows = [f"Models for {provider}:"]
-    rows += [f"  {m.id:<48} {m.label}" for m in models]
-    return CommandResult("\n".join(rows), title="Models")
 
 
 # ----------------------------------------------------------------------- cloud
@@ -263,10 +259,21 @@ def build_registry() -> CommandRegistry:
             "setup [<provider>]",
             cmd_setup,
         ),
-        Command("provider", "List or switch LLM provider", "provider [use <name>]", cmd_provider),
+        Command(
+            "provider",
+            "Switch provider (opens setup if it needs a key)",
+            "provider [use <name>]",
+            cmd_provider,
+            aliases=("providers",),
+        ),
         Command("key", "Store or remove an API key", "key <provider> | rm <provider>", cmd_key),
-        Command("model", "Pick a model, or set one directly", "model [<id>]", cmd_model),
-        Command("models", "List models for a provider", "models [<provider>]", cmd_models),
+        Command(
+            "model",
+            "Pick a model — searches the provider for unlisted ids",
+            "model [<id>]",
+            cmd_model,
+            aliases=("models",),
+        ),
         Command("login", "Cloud auth status, or sign in", "login [<cloud>]", cmd_login),
         Command("kube", "Kubernetes contexts", "kube [use <ctx> | add <path>]", cmd_kube),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),

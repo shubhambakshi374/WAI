@@ -603,14 +603,91 @@ async def test_help_lists_commands() -> None:
             assert expected in rendered
 
 
-async def test_provider_command_lists_and_marks_current() -> None:
+async def test_provider_command_opens_an_interactive_picker() -> None:
+    """A list you cannot act on is a dead end --- the old one just printed text."""
+    from wai.tui.widgets.provider_picker import ProviderPicker
+
     app = make_app()
     async with app.run_test() as pilot:
         await _send(pilot, "/provider")
-        await pilot.app.workers.wait_for_complete()
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ProviderPicker):
+                break
+        assert isinstance(pilot.app.screen, ProviderPicker)
+        await pilot.press("escape")
         await pilot.pause()
-        rendered = _notices(pilot)
-        assert "anthropic" in rendered and "current" in rendered
+
+
+async def test_providers_is_an_alias() -> None:
+    """`/providers` was an unknown-command error, which is just annoying."""
+    from wai.tui.widgets.provider_picker import ProviderPicker
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/providers")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ProviderPicker):
+                break
+        assert isinstance(pilot.app.screen, ProviderPicker)
+        assert "Unknown command" not in _notices(pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_choosing_a_configured_provider_switches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from wai.config.secrets import CredentialStatus
+    from wai.tui.widgets.provider_picker import ProviderPicker
+
+    monkeypatch.setattr(
+        "wai.config.secrets.credential_status",
+        lambda name: CredentialStatus(name, True, "env"),
+    )
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/provider")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ProviderPicker):
+                break
+        picker = pilot.app.screen
+        picker.query_one("#provider-options").highlighted = 3  # deepseek
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause()
+            if not isinstance(pilot.app.screen, ProviderPicker):
+                break
+        assert app.session.provider == "deepseek"
+
+
+async def test_choosing_an_unconfigured_provider_opens_setup(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The missing link: the list is the route to setting one up."""
+    from wai.tui.widgets.provider_picker import ProviderPicker
+    from wai.tui.widgets.setup import SetupWizard
+
+    _no_credentials(monkeypatch)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):  # first-run wizard opens; dismiss it
+            await pilot.pause()
+            if isinstance(pilot.app.screen, SetupWizard):
+                break
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await _send(pilot, "/provider")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ProviderPicker):
+                break
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, SetupWizard):
+                break
+        assert isinstance(pilot.app.screen, SetupWizard)
+        assert pilot.app.screen.provider == "anthropic"
 
 
 async def test_kube_command_never_writes_the_kubeconfig(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1130,7 +1207,7 @@ async def test_wizard_stores_the_key_checks_it_and_lists_models(monkeypatch) -> 
     from wai.tui.widgets.setup import Step
 
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.live_models", _returning(FAKE_MODELS))
+    monkeypatch.setattr("wai.providers.registry.live_models", _returning(FAKE_MODELS))
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1156,7 +1233,7 @@ async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypa
     async def rejecting(name, config):  # type: ignore[no-untyped-def]
         raise AuthenticationError("invalid x-api-key", provider=name)
 
-    monkeypatch.setattr("wai.providers.live_models", rejecting)
+    monkeypatch.setattr("wai.providers.registry.live_models", rejecting)
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1170,7 +1247,7 @@ async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypa
 
 async def test_finishing_sets_the_session_and_the_default_profile(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.live_models", _returning(FAKE_MODELS))
+    monkeypatch.setattr("wai.providers.registry.live_models", _returning(FAKE_MODELS))
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1206,7 +1283,7 @@ async def test_unmatched_filter_requeries_the_provider(monkeypatch) -> None:  # 
         return FAKE_MODELS if len(calls) == 1 else later
 
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.live_models", growing)
+    monkeypatch.setattr("wai.providers.registry.live_models", growing)
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1230,3 +1307,108 @@ def _returning(models):  # type: ignore[no-untyped-def]
         return list(models)
 
     return _fetch
+
+
+async def test_model_picker_filters_and_falls_through_to_the_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Not in the catalog must not mean not available."""
+    from textual.widgets import Input
+
+    from wai.config.secrets import CredentialStatus
+    from wai.tui.widgets.model_picker import ModelPicker
+
+    monkeypatch.setattr(
+        "wai.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
+    )
+    calls: list[str] = []
+
+    async def live(name, config):  # type: ignore[no-untyped-def]
+        calls.append(name)
+        return [ModelInfo(id="claude-unreleased-9", provider="anthropic")]
+
+    monkeypatch.setattr("wai.providers.registry.live_models", live)
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/model")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ModelPicker):
+                break
+        picker = pilot.app.screen
+
+        picker.query_one("#model-filter", Input).value = "sonnet"
+        await pilot.pause()
+        await pilot.pause()
+        assert calls == [], "a local match must not cost a network call"
+
+        picker.query_one("#model-filter", Input).value = "unreleased"
+        for _ in range(60):
+            await pilot.pause()
+            if calls:
+                break
+        assert calls == ["anthropic"], "an unmatched filter asks the provider"
+        assert any(m.id == "claude-unreleased-9" for m in picker.models)
+
+
+async def test_model_picker_accepts_an_id_nothing_lists(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from textual.widgets import Input
+
+    from wai.config.secrets import CredentialStatus
+    from wai.tui.widgets.model_picker import ModelPicker
+
+    monkeypatch.setattr(
+        "wai.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
+    )
+
+    async def nothing(name, config):  # type: ignore[no-untyped-def]
+        return []
+
+    monkeypatch.setattr("wai.providers.registry.live_models", nothing)
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/model")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ModelPicker):
+                break
+        picker = pilot.app.screen
+        picker.query_one("#model-filter", Input).value = "some-brand-new-model"
+        for _ in range(60):
+            await pilot.pause()
+            if picker.query_one("#model-options").option_count == 0:
+                break
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause()
+            if not isinstance(pilot.app.screen, ModelPicker):
+                break
+        assert app.session.model == "some-brand-new-model"
+
+
+async def test_model_picker_says_so_when_there_is_no_key(monkeypatch) -> None:
+    from textual.widgets import Input, Label
+
+    from wai.tui.widgets.model_picker import ModelPicker
+
+    _no_credentials(monkeypatch)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ == "SetupWizard":
+                break
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await _send(pilot, "/model")
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, ModelPicker):
+                break
+        picker = pilot.app.screen
+        picker.query_one("#model-filter", Input).value = "nothing-like-this"
+        await pilot.pause()
+        await pilot.pause()
+        note = str(picker.query_one("#model-note", Label).render())
+        assert "no credentials" in note and "/setup" in note

@@ -230,11 +230,13 @@ class SetupWizard(ModalScreen[bool]):
             self.dismiss(True)
 
     async def _health_check(self) -> None:
-        from wai.providers import live_models, merge_models
-        from wai.providers.registry import catalog_for
+        # Reached through the registry module, not a re-exported name, so
+        # there is a single place to patch or trace.
+        from wai.providers import registry
+        from wai.providers.registry import catalog_for, merge_models
 
         try:
-            found = await live_models(self.provider, self.wai.config)
+            found = await registry.live_models(self.provider, self.wai.config)
         except Exception as exc:
             self.step = Step.KEY
             self.problem = f"{self.provider} rejected that: {_first_line(exc)}"
@@ -252,38 +254,20 @@ class SetupWizard(ModalScreen[bool]):
 
     @work(exclusive=True, group="model-search")
     async def filter_models(self, needle: str) -> None:
-        """Filter locally, and re-query the provider when nothing matches."""
-        wanted = needle.strip().casefold()
-        matches = [m for m in self.models if wanted in m.id.casefold()] if wanted else self.models
+        """Same search the model picker uses --- one implementation, one path."""
+        from wai.providers.registry import search_models
+
         note = self.query_one("#search-note", Label)
-
-        if matches or not wanted or self._searching:
-            self._fill_models(matches)
-            if wanted and not matches and not self._searching:
-                note.update("Nothing local matches — searching the provider…")
-            return
-
+        if needle.strip() and not self._searching:
+            note.update("Searching…")
         self._searching = True
-        note.update("Nothing local matches — searching the provider…")
         try:
-            from wai.providers import live_models, merge_models
-
-            fresh = await live_models(self.provider, self.wai.config)
-            self.models = merge_models(self.models, fresh)
-        except Exception as exc:
-            note.update(f"Live search failed: {_first_line(exc)}")
-            return
+            result = await search_models(self.provider, self.wai.config, self.models, needle)
         finally:
             self._searching = False
-
-        matches = [m for m in self.models if wanted in m.id.casefold()]
-        self._fill_models(matches)
-        note.update(
-            f"{len(matches)} match after re-querying {self.provider}."
-            if matches
-            else f"{self.provider} does not list anything matching that. "
-            "You can still enter the id and press Finish."
-        )
+        self.models = result.known
+        self._fill_models(result.matches)
+        note.update(result.note or "Not listed? Keep typing — WAI re-queries the provider.")
 
     def action_cancel(self) -> None:
         self.dismiss(False)

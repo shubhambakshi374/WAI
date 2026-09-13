@@ -60,6 +60,7 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=1.0",
     "pytest-textual-snapshot>=1.1",
+    "pytest-timeout>=2.3",
     "textual-dev>=1.8",
     "ruff>=0.9",
     "mypy>=1.14",
@@ -79,6 +80,8 @@ markers = [
     "live: hits real provider APIs; requires credentials, opt-in via -m live",
 ]
 addopts = "-m 'not live'"
+# A hung test blocks the whole suite with no output; fail loudly instead.
+timeout = 90
 
 [tool.ruff]
 line-length = 100
