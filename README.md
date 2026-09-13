@@ -332,6 +332,7 @@ pressing a key.
 | `gemini` | `GEMINI_API_KEY` | |
 | `mistral` | `MISTRAL_API_KEY` | |
 | `bedrock` | **AWS credential chain** | `AWS_PROFILE`, instance/IRSA roles — no API key |
+| `local` | **none** | Anything OpenAI-compatible you run yourself — see below |
 
 Credentials resolve in this order: `WAI_<PROVIDER>_API_KEY`, then the native
 environment variable above, then the OS keyring. Environment wins so CI and
@@ -340,6 +341,59 @@ headless runs work without a keyring backend.
 Bedrock is deliberately different: it authenticates through the standard boto3
 chain, because requiring an API key would break the way a DevOps tool is
 normally deployed.
+
+## Local and self-hosted models
+
+Ollama or LM Studio on your laptop, vLLM or llama.cpp on your own
+infrastructure, MoE models included. `/setup local` finds servers running on
+this machine without being told a port:
+
+```
+2 of 4 — which server?
+  Ollama · http://127.0.0.1:11434/v1 · 3 models
+  …or a URL, e.g. https://vllm.internal:8000
+```
+
+An endpoint counts only when `GET /v1/models` returns a real model list. A port
+being open proves nothing — on macOS, port 5000 answers 403 and is AirPlay.
+Only loopback is probed; remote endpoints are entered by URL.
+
+**Profiles are how endpoints are named**, so one person can hold several:
+
+```toml
+[profiles.laptop]
+provider = "local"
+model = "qwen3:30b"
+base_url = "http://127.0.0.1:11434/v1"
+
+[profiles.cluster]
+provider = "local"
+model = "Qwen/Qwen3-235B-A22B"
+base_url = "https://vllm.internal:8000/v1"
+api_key_env = "VLLM_TOKEN"     # most local servers need no key at all
+```
+
+`/profile` lists them, `/profile use cluster` switches endpoint and model
+together. Nothing local ever touches your OS keyring.
+
+### Tool support is detected, not assumed
+
+WAI's filesystem and Kubernetes tools need a model that can call tools, and
+plenty of good local models cannot. Ollama reports this, so WAI reads it:
+
+```
+llama3.2:latest  (3.2B, Q4_K_M)              tools
+tinyllama:latest (1.1B, Q4_0)                no tools
+```
+
+Choose a model without tool support and WAI declares no tools and says so —
+offering them produces hallucinated call syntax or a hard error, which is far
+more confusing than being told. vLLM and llama.cpp report nothing, so those
+are assumed capable; override with `supports_tools = false` on the profile.
+
+A large MoE loads before it emits its first token, so a cold start can take a
+minute and Ollama re-loads after its idle timeout. Timeouts are generous and
+the status line says the model is loading rather than looking hung.
 
 ## Configuration
 
@@ -497,6 +551,7 @@ tests/         mirrors it; tests/__snapshots__ holds the TUI SVGs
 - **Phase 1.75 — writes behind an approval gate.** ✅ `write_file`/`edit_file`/`delete_path`, diff-first prompts.
 - **Phase 2a — DevOps foundations.** ✅ Cloud auth, contexts, redaction, protected environments, slash commands.
 - **Phase 2b — Kubernetes.** ✅ Topology, usage, storage, metrics, schema lookup, and changes behind a dry-run gate.
+- **Local models.** ✅ Ollama, LM Studio, vLLM, llama.cpp — discovered, capability-checked, no key.
 - **Phase 2c–2e —** AWS, Azure/GCP, and the justified CLI fallback.
 - **Phase 3 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
 - **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
