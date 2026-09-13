@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from wai.config.models import Config
@@ -206,3 +207,53 @@ def merge_models(*groups: Sequence[ModelInfo]) -> list[ModelInfo]:
         for model in group:
             seen.setdefault(model.id, model)
     return sorted(seen.values(), key=lambda m: m.id)
+
+
+@dataclass
+class ModelSearch:
+    """Result of filtering models, and whether the provider was re-asked."""
+
+    matches: list[ModelInfo]
+    known: list[ModelInfo]
+    requeried: bool = False
+    error: str = ""
+
+    @property
+    def note(self) -> str:
+        if self.error:
+            return f"Live search failed: {self.error}"
+        if self.requeried:
+            return (
+                f"{len(self.matches)} match after re-querying the provider."
+                if self.matches
+                else "The provider does not list anything matching that. "
+                "You can still enter the id directly."
+            )
+        return ""
+
+
+async def search_models(
+    provider: str, config: Config, known: Sequence[ModelInfo], needle: str
+) -> ModelSearch:
+    """Filter locally; ask the provider again when nothing matches.
+
+    A catalog goes stale faster than providers ship models, so "not in the
+    list" must not mean "not available" --- it means look again.
+    """
+    wanted = needle.strip().casefold()
+    pool = list(known)
+    if not wanted:
+        return ModelSearch(matches=pool, known=pool)
+
+    matches = [m for m in pool if wanted in m.id.casefold()]
+    if matches:
+        return ModelSearch(matches=matches, known=pool)
+
+    try:
+        pool = merge_models(pool, await live_models(provider, config))
+    except Exception as exc:
+        first = str(exc).strip().splitlines()
+        return ModelSearch(matches=[], known=list(known), error=first[0][:160] if first else "")
+    return ModelSearch(
+        matches=[m for m in pool if wanted in m.id.casefold()], known=pool, requeried=True
+    )

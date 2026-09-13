@@ -12,6 +12,7 @@ from wai.providers.registry import (
     known_models,
     live_models,
     merge_models,
+    search_models,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "known_models",
     "live_models",
     "merge_models",
+    "search_models",
 ]
