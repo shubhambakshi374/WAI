@@ -810,3 +810,93 @@ async def test_enter_expands_a_visual_full_screen() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(pilot.app.screen, VisualScreen)
+
+
+async def _open_modal(pilot, request):  # type: ignore[no-untyped-def]
+    """Push an ApprovalModal and capture its decision via callback.
+
+    push_screen_wait needs a worker; a callback is the equivalent that a test
+    can drive directly.
+    """
+    from wai.tui.widgets.approval import ApprovalModal
+
+    captured: list[object] = []
+    pilot.app.push_screen(ApprovalModal(request), callback=captured.append)
+    for _ in range(40):
+        await pilot.pause()
+        if isinstance(pilot.app.screen, ApprovalModal):
+            break
+    return pilot.app.screen, captured
+
+
+async def test_protected_target_demands_a_typed_confirmation() -> None:
+    """A keypress is not enough for production; you must type the cluster name."""
+    from textual.widgets import Button, Input
+
+    from wai.tools.approval import ApprovalRequest, Decision
+
+    request = ApprovalRequest(
+        tool="k8s_delete",
+        action="delete",
+        path="Deployment/web",
+        target="cluster AKS_EU_PROD · namespace payments",
+        dry_run="server-side dry run succeeded",
+        protected=True,
+    )
+    app = make_app()
+    async with app.run_test() as pilot:
+        screen, captured = await _open_modal(pilot, request)
+        assert screen.challenge == "AKS_EU_PROD"
+        assert not screen.query("#always"), "no standing grant on a protected target"
+
+        screen.query_one("#approve", Button).press()
+        await pilot.pause()
+        assert captured == [], "approval must not go through unconfirmed"
+
+        await pilot.press("y")
+        await pilot.pause()
+        assert captured == [], "the shortcut must not bypass the challenge either"
+
+        screen.query_one("#challenge", Input).value = "AKS_EU_PROD"
+        await pilot.pause()
+        screen.query_one("#approve", Button).press()
+        await pilot.pause()
+        assert captured == [Decision.ALLOW]
+
+
+async def test_protected_target_can_still_be_rejected_immediately() -> None:
+    from textual.widgets import Button
+
+    from wai.tools.approval import ApprovalRequest, Decision
+
+    request = ApprovalRequest(
+        tool="k8s_delete",
+        action="delete",
+        path="Deployment/web",
+        target="cluster AKS_EU_PROD",
+        protected=True,
+    )
+    app = make_app()
+    async with app.run_test() as pilot:
+        screen, captured = await _open_modal(pilot, request)
+        screen.query_one("#reject", Button).press()
+        await pilot.pause()
+        assert captured == [Decision.DENY], "rejecting never needs a challenge"
+
+
+async def test_unprotected_target_still_approves_on_a_keypress() -> None:
+    from wai.tools.approval import ApprovalRequest, Decision
+
+    request = ApprovalRequest(
+        tool="k8s_scale",
+        action="scale",
+        path="Deployment/web",
+        target="cluster AKS_QAM · namespace shop",
+    )
+    app = make_app()
+    async with app.run_test() as pilot:
+        screen, captured = await _open_modal(pilot, request)
+        assert screen.challenge == ""
+        await pilot.press("y")
+        await pilot.pause()
+        assert captured == [Decision.ALLOW]

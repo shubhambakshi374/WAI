@@ -16,7 +16,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Button, Input, Label, Static
 
 from wai.tools.approval import ApprovalRequest, Decision
 
@@ -44,7 +44,17 @@ class ApprovalModal(ModalScreen[Decision]):
         padding: 1 2;
     }
     ApprovalModal .headline { text-style: bold; color: $warning; }
-    ApprovalModal .path { text-style: bold; padding-bottom: 1; }
+    ApprovalModal .path { text-style: bold; }
+    ApprovalModal .target { color: $warning; text-style: bold; padding-bottom: 1; }
+    ApprovalModal .dry-run { color: $success; padding-bottom: 1; }
+    ApprovalModal .protected {
+        background: $error 20%;
+        color: $error;
+        text-style: bold;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    ApprovalModal Input { margin-bottom: 1; }
     ApprovalModal .recover { color: $text-muted; padding-bottom: 1; }
     ApprovalModal .recover.-danger { color: $error; }
     ApprovalModal VerticalScroll {
@@ -64,20 +74,38 @@ class ApprovalModal(ModalScreen[Decision]):
     def __init__(self, request: ApprovalRequest) -> None:
         super().__init__()
         self.request = request
+        #: The token a protected target demands. Typing the name is the whole
+        #: point: it forces you to read which environment you are changing.
+        self.challenge = _challenge(request.target) if request.protected else ""
 
     def compose(self) -> ComposeResult:
         req = self.request
         with Vertical():
             yield Label(f"{req.action.upper()} — approval required", classes="headline")
             yield Label(req.path, classes="path")
+            if req.target:
+                yield Label(req.target, classes="target")
+            if self.challenge:
+                yield Label(
+                    f"⚠ PROTECTED ENVIRONMENT — type  {self.challenge}  to confirm",
+                    classes="protected",
+                )
+                yield Input(placeholder=self.challenge, id="challenge")
+            if req.dry_run:
+                yield Label(f"✓ {req.dry_run}", classes="dry-run")
             if req.recoverability:
-                danger = "cannot be undone" in req.recoverability
+                danger = (
+                    "cannot be undone" in req.recoverability or "permanent" in req.recoverability
+                )
                 yield Label(req.recoverability, classes=f"recover{' -danger' if danger else ''}")
             with VerticalScroll():
                 yield Static(self._render_diff(), markup=False, id="diff")
             with Horizontal():
                 yield Button("Reject  (n)", variant="error", id="reject")
-                yield Button(f"Always allow {req.tool}  (a)", id="always")
+                if not self.challenge:
+                    # No standing grant for a protected target: the whole point
+                    # is that each change is looked at.
+                    yield Button(f"Always allow {req.tool}  (a)", id="always")
                 yield Button("Approve  (y)", variant="success", id="approve")
 
     def _render_diff(self) -> str:
@@ -87,23 +115,55 @@ class ApprovalModal(ModalScreen[Decision]):
         # Focus Reject: the safe option should be what Enter hits.
         self.query_one("#reject", Button).focus()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(
-            {
-                "approve": Decision.ALLOW,
-                "always": Decision.ALLOW_ALWAYS,
-                "reject": Decision.DENY,
-            }[event.button.id or "reject"]
+    def _challenge_met(self) -> bool:
+        if not self.challenge:
+            return True
+        try:
+            typed = self.query_one("#challenge", Input).value.strip()
+        except Exception:
+            return False
+        return typed == self.challenge
+
+    def _refuse_unconfirmed(self) -> None:
+        self.notify(
+            f"Type {self.challenge} to confirm a change to a protected environment.",
+            severity="warning",
         )
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        choice = {
+            "approve": Decision.ALLOW,
+            "always": Decision.ALLOW_ALWAYS,
+            "reject": Decision.DENY,
+        }[event.button.id or "reject"]
+        if choice is not Decision.DENY and not self._challenge_met():
+            self._refuse_unconfirmed()
+            return
+        self.dismiss(choice)
+
     def action_approve(self) -> None:
+        if not self._challenge_met():
+            self._refuse_unconfirmed()
+            return
         self.dismiss(Decision.ALLOW)
 
     def action_approve_always(self) -> None:
+        if self.challenge:
+            self._refuse_unconfirmed()
+            return
         self.dismiss(Decision.ALLOW_ALWAYS)
 
     def action_reject(self) -> None:
         self.dismiss(Decision.DENY)
+
+
+def _challenge(target: str) -> str:
+    """The word that must be typed. The context name, not a generic yes ---
+    typing it is what makes you read which environment this is."""
+    if not target:
+        return "confirm"
+    head = target.split("·")[0].strip()
+    return head.replace("cluster ", "").strip() or "confirm"
 
 
 class InteractiveApproval:
