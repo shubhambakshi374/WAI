@@ -1039,3 +1039,194 @@ async def test_sending_a_prompt_hides_any_popup() -> None:
         await _settle(pilot)
         assert not _suggest(pilot).visible_now
         assert len(provider.calls) == 1
+
+
+# ------------------------------------------------------------- setup wizard
+
+FAKE_MODELS = [
+    ModelInfo(id="claude-opus-5", provider="anthropic", display_name="Opus 5"),
+    ModelInfo(id="claude-haiku-4-5", provider="anthropic", display_name="Haiku 4.5"),
+]
+
+
+def _no_credentials(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from wai.config.secrets import CredentialStatus
+
+    monkeypatch.setattr(
+        "wai.config.secrets.credential_status",
+        lambda name: CredentialStatus(name, False, False),
+    )
+
+
+async def _reach_model_step(pilot, key: str = "sk-test"):  # type: ignore[no-untyped-def]
+    from textual.widgets import Input
+
+    from wai.tui.widgets.setup import Step
+
+    wizard = pilot.app.screen
+    await pilot.press("enter")  # accept the highlighted provider
+    await pilot.pause()
+    await pilot.pause()
+    wizard.query_one("#key", Input).value = key
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause()
+        if (wizard.step in (Step.MODEL, Step.KEY) and wizard.problem) or wizard.step is Step.MODEL:
+            break
+    return wizard
+
+
+async def test_wai_starts_with_nothing_configured(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Loading must not depend on having a provider --- that is the whole point."""
+    _no_credentials(monkeypatch)
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.is_running
+        assert app.configured_providers == []
+
+
+async def test_first_run_opens_the_wizard_and_says_why(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from wai.tui.widgets.setup import SetupWizard
+
+    _no_credentials(monkeypatch)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, SetupWizard):
+                break
+        assert isinstance(pilot.app.screen, SetupWizard)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert "No provider is configured" in _notices(pilot)
+
+
+async def test_escape_leaves_a_usable_app(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Skipping setup must not trap you in a modal."""
+    from wai.tui.widgets.setup import SetupWizard
+
+    _no_credentials(monkeypatch)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if isinstance(pilot.app.screen, SetupWizard):
+                break
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, SetupWizard)
+        await _type(pilot, "/help")
+        await pilot.press("enter")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Commands:" in _notices(pilot)
+
+
+async def test_wizard_stores_the_key_checks_it_and_lists_models(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import keyring
+
+    from wai.config.secrets import KEYRING_SERVICE
+    from wai.tui.widgets.setup import Step
+
+    _no_credentials(monkeypatch)
+    monkeypatch.setattr("wai.providers.live_models", _returning(FAKE_MODELS))
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ == "SetupWizard":
+                break
+        wizard = await _reach_model_step(pilot)
+        assert wizard.step is Step.MODEL
+        assert wizard.provider == "anthropic"
+        # The keyring here is the in-memory stand-in from conftest.
+        assert keyring.get_password(KEYRING_SERVICE, "anthropic") == "sk-test"
+        ids = {m.id for m in wizard.models}
+        assert {"claude-opus-5", "claude-haiku-4-5"} <= ids
+
+
+async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Finding out on your first message is the failure mode this replaces."""
+    from wai.core.errors import AuthenticationError
+    from wai.tui.widgets.setup import Step
+
+    _no_credentials(monkeypatch)
+
+    async def rejecting(name, config):  # type: ignore[no-untyped-def]
+        raise AuthenticationError("invalid x-api-key", provider=name)
+
+    monkeypatch.setattr("wai.providers.live_models", rejecting)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ == "SetupWizard":
+                break
+        wizard = await _reach_model_step(pilot, "sk-wrong")
+        assert wizard.step is Step.KEY, "it goes back so you can retype"
+        assert "invalid x-api-key" in wizard.problem
+
+
+async def test_finishing_sets_the_session_and_the_default_profile(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _no_credentials(monkeypatch)
+    monkeypatch.setattr("wai.providers.live_models", _returning(FAKE_MODELS))
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ == "SetupWizard":
+                break
+        await _reach_model_step(pilot)
+        await pilot.press("enter")  # accept the highlighted model
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ != "SetupWizard":
+                break
+        assert app.session.provider == "anthropic"
+        assert app.session.model in {m.id for m in FAKE_MODELS} | {
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5-20251001",
+        }
+        # Persisted, so the next session starts configured.
+        assert app.config.profiles[app.config.default_profile].provider == "anthropic"
+
+
+async def test_unmatched_filter_requeries_the_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The live search: if it is not in the first pull, ask again."""
+    from textual.widgets import Input
+
+    calls: list[str] = []
+    later = [*FAKE_MODELS, ModelInfo(id="claude-brand-new-6", provider="anthropic")]
+
+    async def growing(name, config):  # type: ignore[no-untyped-def]
+        calls.append(name)
+        return FAKE_MODELS if len(calls) == 1 else later
+
+    _no_credentials(monkeypatch)
+    monkeypatch.setattr("wai.providers.live_models", growing)
+    app = make_app()
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if pilot.app.screen.__class__.__name__ == "SetupWizard":
+                break
+        wizard = await _reach_model_step(pilot)
+        assert len(calls) == 1, "the health check is the first pull"
+
+        wizard.query_one("#filter", Input).value = "brand-new"
+        for _ in range(80):
+            await pilot.pause()
+            if len(calls) > 1:
+                break
+        assert len(calls) == 2, "an unmatched filter re-queries the provider"
+        assert any(m.id == "claude-brand-new-6" for m in wizard.models)
+
+
+def _returning(models):  # type: ignore[no-untyped-def]
+    async def _fetch(name, config):  # type: ignore[no-untyped-def]
+        return list(models)
+
+    return _fetch

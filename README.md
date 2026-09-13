@@ -42,10 +42,23 @@ uv tool install git+https://github.com/shubhambakshi374/WAI
 
 ## Quick start
 
+Just start it. WAI runs with nothing configured and walks you through setup on
+first launch:
+
+```bash
+wai                              # launch the TUI
+```
+
+The wizard asks which provider, takes your API key, **checks it against the
+provider** before accepting it, and then lets you pick a default model from
+what that key can actually reach. `/setup` reopens it any time, and `escape`
+skips it --- the rest of WAI still works.
+
+Prefer the shell?
+
 ```bash
 wai config set-key anthropic     # stored in the OS keyring, never on disk
 wai config doctor                # which providers can authenticate
-wai                              # launch the TUI
 ```
 
 Headless, for scripts and CI:

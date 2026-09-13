@@ -86,6 +86,18 @@ async def cmd_key(app: WaiApp, args: list[str]) -> CommandResult:
     return CommandResult.silent()
 
 
+async def cmd_setup(app: WaiApp, args: list[str]) -> CommandResult:
+    from wai.providers import PROVIDER_NAMES
+
+    provider = args[0] if args else None
+    if provider and provider not in PROVIDER_NAMES:
+        return CommandResult.error(
+            f"Unknown provider {provider!r}. Known: {', '.join(PROVIDER_NAMES)}"
+        )
+    app.open_setup(provider)
+    return CommandResult.silent()
+
+
 async def cmd_model(app: WaiApp, args: list[str]) -> CommandResult:
     from wai.core.types import ModelInfo
     from wai.providers.registry import known_models
@@ -245,6 +257,12 @@ def build_registry() -> CommandRegistry:
     registry = CommandRegistry()
     for command in (
         Command("help", "Show this list", "help", cmd_help, aliases=("?",)),
+        Command(
+            "setup",
+            "Add a provider: key, health check, default model",
+            "setup [<provider>]",
+            cmd_setup,
+        ),
         Command("provider", "List or switch LLM provider", "provider [use <name>]", cmd_provider),
         Command("key", "Store or remove an API key", "key <provider> | rm <provider>", cmd_key),
         Command("model", "Pick a model, or set one directly", "model [<id>]", cmd_model),

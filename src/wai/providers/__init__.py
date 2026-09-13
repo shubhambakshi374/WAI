@@ -10,6 +10,8 @@ from wai.providers.registry import (
     catalog_for,
     create_provider,
     known_models,
+    live_models,
+    merge_models,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "catalog_for",
     "create_provider",
     "known_models",
+    "live_models",
+    "merge_models",
 ]

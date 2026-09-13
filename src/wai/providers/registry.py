@@ -8,6 +8,7 @@ overrides ``list_models``.
 from __future__ import annotations
 
 import importlib
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from wai.config.models import Config
@@ -182,3 +183,26 @@ def create_provider(name: str, config: Config) -> BaseProvider:
     module = importlib.import_module(module_path)
     cls: type[BaseProvider] = getattr(module, class_name)
     return cls(api_key=get_api_key(name), settings=config.provider_settings(name))
+
+
+async def live_models(name: str, config: Config) -> list[ModelInfo]:
+    """Ask the provider what it actually serves.
+
+    Doubles as the credential health check: it is a real authenticated call,
+    read-only and cheap, and a bad key fails here with the provider's own
+    error rather than on the user's first real prompt.
+    """
+    provider = create_provider(name, config)
+    try:
+        return await provider.list_models()
+    finally:
+        await provider.close()
+
+
+def merge_models(*groups: Sequence[ModelInfo]) -> list[ModelInfo]:
+    """Combine catalog and live results, keeping the first sighting of each id."""
+    seen: dict[str, ModelInfo] = {}
+    for group in groups:
+        for model in group:
+            seen.setdefault(model.id, model)
+    return sorted(seen.values(), key=lambda m: m.id)

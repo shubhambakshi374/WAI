@@ -127,6 +127,31 @@ class WaiApp(App[None]):
             self.config.cloud.kubeconfigs.append(path)
             save_config(self.config)
 
+    async def apply_setup(self, provider: str, model: str) -> None:
+        """Adopt what the wizard chose, for this session and the next."""
+        from wai.config.loader import resolve_profile as _resolve
+
+        await self.switch_provider(provider)
+        self.session.model = model
+        name, profile = _resolve(self.config, None)
+        self.config.profiles[name] = profile.model_copy(
+            update={"provider": provider, "model": model}
+        )
+        save_config(self.config)
+        self.store.update_header(self.session)
+
+    @property
+    def configured_providers(self) -> list[str]:
+        from wai.config.secrets import credential_status
+        from wai.providers import PROVIDER_NAMES
+
+        return [n for n in PROVIDER_NAMES if credential_status(n).available]
+
+    def open_setup(self, provider: str | None = None) -> None:
+        from wai.tui.widgets.setup import SetupWizard
+
+        self.push_screen(SetupWizard(provider))
+
     def open_model_picker(self) -> None:
         screen = self.screen
         if isinstance(screen, ChatScreen):

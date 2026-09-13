@@ -89,6 +89,29 @@ class ChatScreen(Screen[None]):
         composer = self.query_one(Composer)
         composer.suggestions = self.query_one(CommandSuggestions)
         composer.focus()
+        await self._greet_if_unconfigured()
+
+    async def _greet_if_unconfigured(self) -> None:
+        """Finding out you have no key by sending a message and getting an
+        error is a poor way to learn it."""
+        app = self.wai
+        configured = app.configured_providers
+        if not configured:
+            await self.query_one(MessageList).add_notice(
+                "Welcome to WAI",
+                "No provider is configured yet. Let's set one up — you can paste an "
+                "API key, WAI will check it works, and you pick a default model.\n"
+                "Escape to skip; /setup whenever you are ready.",
+            )
+            app.open_setup()
+        elif app.session.provider not in configured:
+            await self.query_one(MessageList).add_notice(
+                "No credentials for this provider",
+                f"The session is set to {app.session.provider}, which has no "
+                f"credentials. Configured: {', '.join(configured)}.\n"
+                f"Run /setup {app.session.provider}, or /provider use <name>.",
+                "warning",
+            )
 
     # ------------------------------------------------------------------ sending
 
