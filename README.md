@@ -29,6 +29,7 @@ To get a `wai` command on your PATH instead of typing `uv run`:
 ```bash
 uv tool install .                 # from a clone
 uv tool install --editable .      # ...or track your edits live
+uvx --from . wai --version        # ...or run it once, installing nothing
 ```
 
 That installs a snapshot, so after changing the code either re-run it with
@@ -249,8 +250,12 @@ context. That is what makes this affordable rather than a novelty.
 Optional extras, so you only carry what you use:
 
 ```bash
-uv tool install 'wai[k8s]'          # or aws, azure, gcp, all
+uv tool install '.[k8s]'    # from a clone; or aws, azure, gcp, all
+uv sync --extra k8s         # ...or just for a dev checkout
 ```
+
+Once WAI is on PyPI these become `wai[k8s]`. Until then the hints WAI prints
+use the forms above, because `uv tool install 'wai[k8s]'` would simply fail.
 
 Uninstalled integrations show up in `/tools` with the command to add them,
 rather than silently not being there.
@@ -388,15 +393,83 @@ loop from being a breaking change.
 ## Development
 
 ```bash
-uv sync --all-groups
-uv run pytest                       # unit tests, no network
-uv run pytest -m live               # hits real APIs; costs money; needs keys
-uv run ruff check . && uv run mypy
-uv run textual run --dev wai.tui.app:WaiApp   # with `uv run textual console`
+git clone https://github.com/shubhambakshi374/WAI && cd WAI
+uv sync --all-groups        # also pulls every cloud extra: the dev group depends on wai[all]
+uv run wai                  # the TUI, straight from the checkout
+uvx --from . wai --version  # or run it once in a throwaway env, installing nothing
 ```
 
-Snapshot tests render the TUI to SVG and will churn when Textual is upgraded:
-`uv run pytest tests/test_snapshots.py --snapshot-update`.
+### The check suite
+
+CI runs exactly these four, in this order. Run all of them before pushing ---
+`ruff check` passing does **not** mean `ruff format --check` will:
+
+```bash
+uv run ruff check .
+uv run ruff format .        # CI runs `--check`; run it without to fix in place
+uv run mypy
+uv run pytest
+```
+
+| | |
+|---|---|
+| `uv run pytest` | Unit tests. No network, no cluster, no API keys. |
+| `uv run pytest -m live` | Hits real provider APIs and clusters. **Costs money.** Skips anything without credentials. |
+| `uv run pytest tests/test_layering.py` | The architectural guard --- see below. |
+| `uv run pytest tests/test_snapshots.py --snapshot-update` | Refresh TUI snapshots after a deliberate layout change or a Textual upgrade. |
+
+`tests/test_layering.py` asserts that `core`, `providers`, `config`,
+`storage`, `tools`, `cloud`, `runner.py`, `workspace.py` and `agent.py` never
+import `textual`. If it fails, move the offending code into `wai.tui` rather
+than deleting the test --- the workflow engine drives all of that headlessly.
+
+### Debugging the TUI
+
+`print` goes nowhere useful in a full-screen app. Use two terminals:
+
+```bash
+uv run textual console                          # terminal 1: log sink
+uv run textual run --dev wai.tui.app:WaiApp     # terminal 2: the app, with live CSS reload
+```
+
+`self.log(...)` inside a widget then shows up in the console.
+
+### Building a distributable
+
+```bash
+uv build                          # -> dist/wai-<version>-py3-none-any.whl and .tar.gz
+uv tool install --force dist/*.whl
+wai --version
+uv tool uninstall wai
+```
+
+That produces a wheel anyone can install with `uv tool install` or `pipx`.
+There is **no publishing set up** --- no PyPI release workflow, deliberately.
+Distribution today is `git clone` or `uv tool install git+<url>`.
+
+There is also no standalone single-file binary. `providers/registry.py` and
+the cloud integrations import lazily via `importlib`, which PyInstaller's
+static analysis cannot see, so a naive freeze would build cleanly and then
+find zero providers at runtime. Doing it properly needs explicit
+`hiddenimports` and a per-platform signing story.
+
+### Working on one cloud only
+
+The dev group installs every extra. To reproduce what a user with a partial
+install sees --- and check the graceful-degradation path --- skip it:
+
+```bash
+uv sync --extra k8s --no-dev      # kubernetes only; GCP and Azure absent
+uv run --no-dev wai tools list    # missing integrations show their install hint
+```
+
+### Layout
+
+```
+src/wai/       the package (see Architecture above)
+tests/         mirrors it; tests/__snapshots__ holds the TUI SVGs
+.github/       CI only
+```
 
 ## Roadmap
 
