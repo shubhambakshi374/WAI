@@ -15,6 +15,7 @@ from wai.cloud import k8s as k8s_api
 from wai.cloud.base import ProtectionRules
 from wai.cloud.k8s import MetricsUnavailable, build_graph, parse_cpu, parse_memory
 from wai.core.visuals import Bars, ResourceGraph, Table, VisualGroup
+from wai.tools.approval import Decision
 from wai.tools.base import CloudContext, ToolContext
 from wai.tools.k8s import k8s_tools
 from wai.workspace import Workspace
@@ -675,3 +676,245 @@ async def test_api_version_comes_from_discovery_not_a_guess(tmp_path) -> None:  
     await tool("k8s_list").run({"kind": "Certificate"}, context_for(client, tmp_path))
     assert seen == ["Certificate"]
     assert client.calls == [("cert-manager.io/v1", "Certificate")]
+
+
+# ----------------------------------------------------------------- mutations
+
+
+class MutableClient(FakeClient):
+    """Records every call so tests can assert what did and did not happen."""
+
+    def __init__(self, *a: Any, live: dict[str, Any] | None = None, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.applied: list[tuple[dict[str, Any], bool]] = []
+        self.deleted: list[tuple[str, bool]] = []
+        self.patched: list[tuple[dict[str, Any], bool]] = []
+        self.live = live
+
+    async def get_one(self, api_version, kind, name, namespace=None):  # type: ignore[no-untyped-def]
+        if self.live is None:
+            raise KeyError("not found")
+        return self.live
+
+    async def apply(self, api_version, kind, body, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.applied.append((body, dry_run))
+        return body
+
+    async def delete(self, api_version, kind, name, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.deleted.append((name, dry_run))
+        return {}
+
+    async def patch(self, api_version, kind, name, patch, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.patched.append((patch, dry_run))
+        return {}
+
+    @property
+    def real_applies(self) -> list[dict[str, Any]]:
+        return [body for body, dry in self.applied if not dry]
+
+    @property
+    def real_deletes(self) -> list[str]:
+        return [name for name, dry in self.deleted if not dry]
+
+    @property
+    def real_patches(self) -> list[dict[str, Any]]:
+        return [p for p, dry in self.patched if not dry]
+
+
+DEPLOY_LIVE: dict[str, Any] = {
+    "kind": "Deployment",
+    "metadata": {"name": "web", "namespace": "shop"},
+    "spec": {"replicas": 2},
+}
+
+MANIFEST: dict[str, Any] = {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {"name": "web", "namespace": "shop"},
+    "spec": {"replicas": 3},
+}
+
+
+def approving(decision: Decision = Decision.ALLOW):  # type: ignore[no-untyped-def]
+    from wai.tools.approval import RecordingPolicy
+
+    return RecordingPolicy(decision=decision)
+
+
+def mutation_context(client, tmp_path, policy, patterns=("*prod*",)):  # type: ignore[no-untyped-def]
+    return ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(k8s=FakeProvider(client), protection=ProtectionRules(patterns=patterns)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("k8s_apply", {"manifest": MANIFEST}),
+        ("k8s_delete", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+        ("k8s_scale", {"kind": "Deployment", "name": "web", "replicas": 5, "namespace": "shop"}),
+        ("k8s_rollout", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+    ],
+)
+async def test_every_mutation_asks_before_acting(tmp_path, name, args) -> None:  # type: ignore[no-untyped-def]
+    policy = approving()
+    client = MutableClient(live=DEPLOY_LIVE)
+    out = await tool(name).run(args, mutation_context(client, tmp_path, policy))
+    assert not out.is_error, out.content
+    assert len(policy.seen) == 1
+    request = policy.seen[0]
+    assert request.target, "the blast radius must always be named"
+    assert "cluster" in request.target and "namespace" in request.target
+    assert request.dry_run, "the server's verdict must be shown"
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("k8s_apply", {"manifest": MANIFEST}),
+        ("k8s_delete", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+        ("k8s_scale", {"kind": "Deployment", "name": "web", "replicas": 5, "namespace": "shop"}),
+        ("k8s_rollout", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+    ],
+)
+async def test_rejection_changes_nothing(tmp_path, name, args) -> None:  # type: ignore[no-untyped-def]
+    """The load-bearing assertion: only the dry run may have run."""
+    client = MutableClient(live=DEPLOY_LIVE)
+    out = await tool(name).run(args, mutation_context(client, tmp_path, approving(Decision.DENY)))
+    assert out.is_error and out.denied
+    assert client.real_applies == []
+    assert client.real_deletes == []
+    assert client.real_patches == []
+
+
+async def test_dry_run_precedes_the_real_apply(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient(live=DEPLOY_LIVE)
+    await tool("k8s_apply").run(
+        {"manifest": MANIFEST}, mutation_context(client, tmp_path, approving())
+    )
+    assert [dry for _, dry in client.applied] == [True, False], "dry run first, then the real one"
+
+
+async def test_an_invalid_manifest_never_reaches_approval(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The API server rejects it during dry run, so the user is not asked."""
+
+    class Rejecting(MutableClient):
+        async def apply(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            raise ValueError("spec.replicaz: unknown field")
+
+    policy = approving()
+    out = await tool("k8s_apply").run(
+        {"manifest": MANIFEST}, mutation_context(Rejecting(), tmp_path, policy)
+    )
+    assert out.is_error and out.summary == "invalid"
+    assert "unknown field" in out.content
+    assert policy.seen == [], "a manifest the server refuses must not be put to the user"
+
+
+async def test_protected_context_is_flagged_on_the_request(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    class ProdClient(MutableClient):
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            self.context = "AKS_EU_PROD"
+
+    policy = approving()
+    await tool("k8s_scale").run(
+        {"kind": "Deployment", "name": "web", "replicas": 5, "namespace": "shop"},
+        mutation_context(ProdClient(live=DEPLOY_LIVE), tmp_path, policy),
+    )
+    assert policy.seen[0].protected is True
+    assert "AKS_EU_PROD" in policy.seen[0].target
+
+
+async def test_deny_mode_refuses_outright(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.cloud.base import ProtectionMode
+
+    class ProdClient(MutableClient):
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            self.context = "AKS_EU_PROD"
+
+    policy = approving()
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(
+            k8s=FakeProvider(ProdClient(live=DEPLOY_LIVE)),
+            protection=ProtectionRules(patterns=("*prod*",), mode=ProtectionMode.DENY),
+        ),
+    )
+    out = await tool("k8s_delete").run({"kind": "Deployment", "name": "web"}, ctx)
+    assert out.is_error and out.summary == "protected"
+    assert policy.seen == [], "deny mode does not even ask"
+
+
+async def test_scale_to_the_same_count_is_a_no_op(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    policy = approving()
+    client = MutableClient(live=DEPLOY_LIVE)
+    out = await tool("k8s_scale").run(
+        {"kind": "Deployment", "name": "web", "replicas": 2},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert out.summary == "no change"
+    assert policy.seen == [], "no change means no prompt"
+    assert client.patched == []
+
+
+async def test_scale_rejects_nonsense(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    ctx = mutation_context(MutableClient(live=DEPLOY_LIVE), tmp_path, approving())
+    for replicas, expected in [(-1, "negative"), ("many", "whole number")]:
+        out = await tool("k8s_scale").run(
+            {"kind": "Deployment", "name": "web", "replicas": replicas}, ctx
+        )
+        assert out.is_error and expected in out.content
+
+
+async def test_delete_says_whether_a_controller_will_recreate_it(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    owned = {
+        **DEPLOY_LIVE,
+        "metadata": {
+            **DEPLOY_LIVE["metadata"],
+            "ownerReferences": [{"kind": "ReplicaSet", "name": "r"}],
+        },
+    }
+    policy = approving()
+    await tool("k8s_delete").run(
+        {"kind": "Pod", "name": "web-1"},
+        mutation_context(MutableClient(live=owned), tmp_path, policy),
+    )
+    assert "recreated" in policy.seen[0].recoverability
+
+    policy2 = approving()
+    await tool("k8s_delete").run(
+        {"kind": "Deployment", "name": "web"},
+        mutation_context(MutableClient(live=DEPLOY_LIVE), tmp_path, policy2),
+    )
+    assert "permanent" in policy2.seen[0].recoverability
+
+
+async def test_apply_diff_ignores_server_churn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """managedFields and resourceVersion change on every apply; burying the
+    real change in that noise defeats the point of showing a diff."""
+    noisy = {
+        **DEPLOY_LIVE,
+        "metadata": {
+            **DEPLOY_LIVE["metadata"],
+            "managedFields": [{"manager": "kubectl", "time": "2024-01-01T00:00:00Z"}],
+            "resourceVersion": "12345",
+        },
+    }
+    policy = approving()
+    await tool("k8s_apply").run(
+        {"manifest": MANIFEST}, mutation_context(MutableClient(live=noisy), tmp_path, policy)
+    )
+    diff = policy.seen[0].diff
+    assert "managedFields" not in diff
+    assert "resourceVersion" not in diff
+    assert "replicas" in diff
+
+
+async def test_mutating_tools_are_marked_as_such() -> None:
+    mutating = {t.name for t in k8s_tools() if not t.read_only}
+    assert mutating == {"k8s_apply", "k8s_delete", "k8s_scale", "k8s_rollout"}

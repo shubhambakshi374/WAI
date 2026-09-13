@@ -186,6 +186,96 @@ class K8sClient:
         parsed: dict[str, Any] = json.loads(response.data)
         return parsed
 
+    # ------------------------------------------------------------ mutation
+
+    async def apply(
+        self,
+        api_version: str,
+        kind: str,
+        body: dict[str, Any],
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Server-side apply. With dry_run the API server validates and reports
+        what would change without persisting anything."""
+
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {
+                "body": body,
+                "field_manager": "wai",
+                "force_conflicts": True,
+            }
+            if namespace:
+                kwargs["namespace"] = namespace
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.server_side_apply(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result)
+
+        return await asyncio.to_thread(_do)
+
+    async def delete(
+        self,
+        api_version: str,
+        kind: str,
+        name: str,
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {"name": name}
+            if namespace:
+                kwargs["namespace"] = namespace
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.delete(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result or {})
+
+        return await asyncio.to_thread(_do)
+
+    async def patch(
+        self,
+        api_version: str,
+        kind: str,
+        name: str,
+        patch: dict[str, Any],
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {
+                "name": name,
+                "body": patch,
+                "content_type": "application/merge-patch+json",
+            }
+            if namespace:
+                kwargs["namespace"] = namespace
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.patch(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result)
+
+        return await asyncio.to_thread(_do)
+
+    async def get_one(
+        self, api_version: str, kind: str, name: str, namespace: str | None = None
+    ) -> dict[str, Any]:
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {"name": name}
+            if namespace:
+                kwargs["namespace"] = namespace
+            result = resource.get(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result)
+
+        return await asyncio.to_thread(_do)
+
     async def metrics(self, kind: str, namespace: str | None = None) -> list[dict[str, Any]]:
         if not await self.api_available(METRICS_API):
             raise MetricsUnavailable
@@ -533,3 +623,40 @@ def explain(document: dict[str, Any], kind: str, field_path: str = "") -> dict[s
         "required": schema.get("required") or [],
         "fields": fields,
     }
+
+
+def summarise_change(before: dict[str, Any] | None, after: dict[str, Any]) -> str:
+    """A short diff of the fields a human cares about, for the approval prompt.
+
+    Not a full object diff: server-side apply rewrites managedFields,
+    resourceVersion and timestamps on every call, and burying the real change
+    in that noise defeats the point of showing a diff at all.
+    """
+    import difflib
+
+    interesting = ("spec", "data", "stringData", "rules", "subjects", "roleRef")
+
+    def slim(obj: dict[str, Any]) -> str:
+        import json
+
+        kept = {k: v for k, v in obj.items() if k in interesting}
+        meta = obj.get("metadata") or {}
+        trimmed = {k: meta[k] for k in ("name", "namespace", "labels", "annotations") if k in meta}
+        if trimmed:
+            kept["metadata"] = trimmed
+        return json.dumps(kept, indent=2, sort_keys=True, default=str)
+
+    if before is None:
+        return "(new object)\n" + slim(after)
+    lines = list(
+        difflib.unified_diff(
+            slim(before).splitlines(keepends=True),
+            slim(after).splitlines(keepends=True),
+            fromfile="live",
+            tofile="proposed",
+            n=2,
+        )
+    )
+    if not lines:
+        return "(no change to spec, data or metadata)"
+    return "".join(lines[:160])
