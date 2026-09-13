@@ -521,17 +521,43 @@ def kube_list() -> None:
 
 
 @kube_app.command("use")
-def kube_use(context: str) -> None:
-    """Select a context for WAI. Your ~/.kube/config is never modified."""
-    from wai.cloud.kube import list_contexts
+def kube_use(
+    context: str,
+    global_scope: Annotated[
+        bool, typer.Option("--global", help="Also set current-context in your kubeconfig.")
+    ] = False,
+    local_scope: Annotated[
+        bool, typer.Option("--local", help="Keep the selection to WAI only.")
+    ] = False,
+) -> None:
+    """Select a context. By default only WAI follows it; --global writes the kubeconfig."""
+    from wai.cloud.kube import list_contexts, set_current_context
 
     config = load_config()
-    contexts, _ = list_contexts(tuple(config.cloud.kubeconfigs))
+    extra = tuple(config.cloud.kubeconfigs)
+    contexts, _ = list_contexts(extra)
     if not any(c.name == context for c in contexts):
         _fail(f"no context named {context!r}")
+
+    scope = config.cloud.kube_context_scope
+    if global_scope:
+        scope = "global"
+    elif local_scope:
+        scope = "wai"
+
     config.cloud.kube_context = context
     save_config(config)
     typer.secho(f"using {context}", fg=typer.colors.GREEN)
+    if scope == "global":
+        try:
+            path = set_current_context(context, extra)
+        except Exception as exc:
+            _fail(f"could not update the kubeconfig: {exc}")
+        else:
+            typer.secho(
+                f"also set current-context in {path} — other terminals will follow",
+                fg=typer.colors.YELLOW,
+            )
 
 
 @kube_app.command("add")

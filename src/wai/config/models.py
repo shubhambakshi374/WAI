@@ -80,7 +80,11 @@ class CloudSettings(BaseModel):
     kubeconfigs: list[str] = Field(default_factory=list)
     """Extra kubeconfig files, added with /kube add."""
     kube_context: str | None = None
-    """The context WAI uses. Never written back to ~/.kube/config."""
+    """The context WAI uses."""
+    kube_context_scope: Literal["wai", "global"] = "wai"
+    """`wai` keeps the selection to this tool. `global` also writes
+    current-context to your kubeconfig, like `kubectl config use-context` ---
+    which retargets every other terminal you have open, so it is opt-in."""
     default_region: str | None = None
     dry_run_first: bool = True
     cli_fallback: bool = True

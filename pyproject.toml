@@ -109,5 +109,6 @@ module = [
     "googleapiclient.*",
     "google.auth.*",
     "azure.*",
+    "yaml",
 ]
 ignore_missing_imports = true

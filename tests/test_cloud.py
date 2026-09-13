@@ -365,3 +365,60 @@ def test_name_value_pairs_redact_the_value_not_the_label() -> None:
 def test_a_bare_key_field_is_still_treated_as_secret() -> None:
     """Outside a name/value pair, `key` may well hold key material."""
     assert redact({"key": "-----BEGIN RSA PRIVATE KEY-----"})["key"] == MARKER
+
+
+# --------------------------------------------------------------- kube scope
+
+
+def test_global_scope_writes_only_current_context(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Opt-in write. Everything else in the file must survive untouched."""
+    import yaml
+
+    from wai.cloud.kube import set_current_context
+
+    path = tmp_path / "config"
+    original = (
+        "apiVersion: v1\nkind: Config\ncurrent-context: staging\n"
+        "preferences:\n  colors: true\n"
+        "clusters:\n- name: c\n  cluster: {server: 'https://x', insecure-skip-tls-verify: true}\n"
+        "contexts:\n- name: AKS_EU_PROD\n  context: {cluster: c, user: u, namespace: payments}\n"
+        "- name: staging\n  context: {cluster: c, user: u}\n"
+        "users:\n- name: u\n  user: {token: keep-me}\n"
+    )
+    path.write_text(original)
+    path.chmod(0o600)
+    monkeypatch.setenv("KUBECONFIG", str(path))
+
+    set_current_context("AKS_EU_PROD")
+
+    after = yaml.safe_load(path.read_text())
+    before = yaml.safe_load(original)
+    assert after["current-context"] == "AKS_EU_PROD"
+    before.pop("current-context")
+    rest = dict(after)
+    rest.pop("current-context")
+    assert rest == before, "only current-context may change"
+    assert after["users"][0]["user"]["token"] == "keep-me"
+    assert path.stat().st_mode & 0o777 == 0o600, "permissions preserved"
+    assert [p.name for p in tmp_path.iterdir()] == ["config"], "no temp file left behind"
+
+
+def test_global_scope_rejects_an_unknown_context(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from wai.cloud.kube import set_current_context
+
+    path = tmp_path / "config"
+    path.write_text(
+        "apiVersion: v1\nkind: Config\ncurrent-context: a\n"
+        "contexts:\n- name: a\n  context: {cluster: c, user: u}\n"
+    )
+    monkeypatch.setenv("KUBECONFIG", str(path))
+    before = path.read_bytes()
+    with pytest.raises(KeyError):
+        set_current_context("nope")
+    assert path.read_bytes() == before, "a rejected write must change nothing"
+
+
+def test_default_scope_is_wai_only() -> None:
+    from wai.config import Config
+
+    assert Config().cloud.kube_context_scope == "wai"

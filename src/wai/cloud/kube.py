@@ -1,13 +1,17 @@
 """Kubeconfig discovery and context selection.
 
-**Nothing here writes to the user's kubeconfig.** Listing contexts reads the
-file; selecting one records the choice in WAI's own state. Changing the global
-context as a side effect of a chat message would silently retarget every other
-terminal the user has open, which is not a surprise worth risking.
+**By default nothing here writes to the user's kubeconfig.** Listing contexts
+reads the file; selecting one records the choice in WAI's own state, because
+changing the global context as a side effect of a chat message would silently
+retarget every other terminal the user has open.
+
+``set_current_context`` is the opt-in exception, reached only when
+``[cloud] kube_context_scope = "global"`` or an explicit ``--global``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,3 +133,36 @@ def build_client(context: str | None, extra: tuple[str, ...] = ()) -> Any:
     config_file = str(paths[0]) if paths else None
     api = kube_config.new_client_from_config(config_file=config_file, context=context)
     return DynamicClient(kube_client.ApiClient(configuration=api.configuration))
+
+
+def set_current_context(name: str, extra: tuple[str, ...] = ()) -> Path:
+    """Write `current-context` into the kubeconfig, preserving the rest.
+
+    Only ever called when the user opted into global scope. Atomic: a crash
+    mid-write must not leave someone without a usable kubeconfig.
+    """
+    import os
+    import tempfile
+
+    import yaml
+
+    paths = kubeconfig_paths(extra)
+    if not paths:
+        raise FileNotFoundError("no kubeconfig to write to")
+    target = paths[0]
+    document = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if not any(c.get("name") == name for c in document.get("contexts") or []):
+        raise KeyError(f"no context named {name!r} in {target}")
+    document["current-context"] = name
+
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".kubeconfig.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(document, handle, default_flow_style=False, sort_keys=False)
+        os.chmod(tmp, target.stat().st_mode & 0o777)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return target

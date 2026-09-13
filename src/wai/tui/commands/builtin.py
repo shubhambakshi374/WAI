@@ -162,10 +162,29 @@ async def cmd_kube(app: WaiApp, args: list[str]) -> CommandResult:
         contexts, _ = await asyncio.to_thread(list_contexts, extra)
         if not any(c.name == wanted for c in contexts):
             return CommandResult.error(f"No context named {wanted!r}. Run /kube to list them.")
+
+        scope = settings.kube_context_scope
+        if "--global" in args:
+            scope = "global"
+        elif "--local" in args:
+            scope = "wai"
+
         app.set_kube_context(wanted)
+        written = ""
+        if scope == "global":
+            from wai.cloud.kube import set_current_context
+
+            try:
+                path = await asyncio.to_thread(set_current_context, wanted, extra)
+            except Exception as exc:
+                return CommandResult.warn(
+                    f"Using context {wanted} in WAI, but the kubeconfig could not be updated: {exc}"
+                )
+            written = f"  Also set current-context in {path} — other terminals will follow."
+
         protected = rules.matches(CloudTarget("k8s", wanted))
         note = "  ⚠ protected: changes here need extra confirmation" if protected else ""
-        return CommandResult(f"Using context {wanted}.{note}")
+        return CommandResult(f"Using context {wanted}.{note}{written}")
 
     if args and args[0] == "add":
         if len(args) < 2:
