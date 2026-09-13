@@ -21,6 +21,16 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.endswith("_API_KEY"):
             monkeypatch.delenv(key, raising=False)
+    # Block the OS keyring at the library boundary, not at our wrapper.
+    # secrets.py does `import keyring` inside each function, so patching here
+    # holds however the wrapper is imported --- and a test must never be able
+    # to overwrite a real stored credential.
+    import keyring
+
+    vault: dict[tuple[str, str], str] = {}
+    monkeypatch.setattr(keyring, "get_password", lambda s, u: vault.get((s, u)))
+    monkeypatch.setattr(keyring, "set_password", lambda s, u, p: vault.__setitem__((s, u), p))
+    monkeypatch.setattr(keyring, "delete_password", lambda s, u: vault.pop((s, u), None))
     monkeypatch.setattr("wai.config.secrets._keyring_get", lambda _provider: None)
 
 

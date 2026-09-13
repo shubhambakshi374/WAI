@@ -121,3 +121,18 @@ def test_starter_config_documents_bedrock_credential_chain() -> None:
 
     assert "AWS credential chain" in STARTER_CONFIG
     assert "api_key" not in STARTER_CONFIG.lower()
+
+
+def test_the_test_harness_cannot_reach_the_real_keyring() -> None:
+    """A regression guard with teeth: an earlier ad-hoc run overwrote a real
+    stored API key because only keyring *reads* were isolated, not writes."""
+    import keyring
+
+    from wai.config.secrets import KEYRING_SERVICE, delete_api_key, set_api_key
+
+    set_api_key("openai", "sk-not-real")
+    assert keyring.get_password(KEYRING_SERVICE, "openai") == "sk-not-real"
+    assert delete_api_key("openai") is True
+
+    # The stand-in is a plain dict, so nothing here touched the OS keychain.
+    assert keyring.get_password.__qualname__ != "get_password"
