@@ -25,20 +25,88 @@ DEFAULT_KUBECONFIG = Path.home() / ".kube" / "config"
 #: unlike AWS there is no guessing from a name.
 READ_VERBS = frozenset({"get", "list", "watch"})
 MUTATE_VERBS = frozenset(
-    {"create", "update", "patch", "delete", "deletecollection", "apply", "scale", "rollout"}
+    {
+        "create",
+        "update",
+        "patch",
+        "replace",
+        "delete",
+        "deletecollection",
+        "apply",
+        "scale",
+        "rollout",
+    }
 )
 
 #: Kinds whose payload is credential material whatever the verb.
-SECRET_KINDS = frozenset({"Secret"})
+SECRET_KINDS = frozenset({"Secret", "ServiceAccount", "CertificateSigningRequest"})
+
+#: Subresources that are a different operation from their parent. ``pods/exec``
+#: is reached with the verb ``get``, and it runs a process --- so the verb is
+#: worthless here and the subresource decides on its own.
+PRIVILEGED_SUBRESOURCES = frozenset(
+    {
+        "exec",  # runs a process in a container
+        "attach",  # joins one already running
+        "portforward",  # opens a tunnel into the cluster network
+        "proxy",  # same, through the API server
+        "token",  # mints a credential that outlives this session
+        "approval",  # signs a certificate
+        "binding",  # assigns a pod to a node directly
+        "eviction",  # removes a running pod
+        "escalate",  # grants rights the grantor does not hold
+        "impersonate",  # acts as someone else
+    }
+)
+
+#: Kinds where *changing* one rewrites who may do what, or takes capacity out
+#: of service. Reading them is ordinary; writing them is not.
+PRIVILEGED_KINDS = frozenset(
+    {
+        "Role",
+        "ClusterRole",
+        "RoleBinding",
+        "ClusterRoleBinding",
+        "ServiceAccount",
+        "CertificateSigningRequest",
+        "ValidatingWebhookConfiguration",
+        "MutatingWebhookConfiguration",
+        "ValidatingAdmissionPolicy",
+        "ValidatingAdmissionPolicyBinding",
+        "Node",
+        "PodSecurityPolicy",
+        "APIService",
+        "CustomResourceDefinition",
+    }
+)
 
 
-def classify(verb: str, kind: str = "") -> Sensitivity:
+def classify(verb: str, kind: str = "", subresource: str = "") -> Sensitivity:
+    """Where an operation sits on the four-level scale.
+
+    Precedence runs highest-first and the subresource outranks the verb,
+    because that is the direction the danger actually flows.
+    """
     verb = verb.casefold()
+    subresource = subresource.casefold().lstrip("/")
+
+    if subresource in PRIVILEGED_SUBRESOURCES:
+        return Sensitivity.PRIVILEGED
+    if verb in MUTATE_VERBS and kind in PRIVILEGED_KINDS:
+        return Sensitivity.PRIVILEGED
+    if verb == "deletecollection":
+        # One call, an unbounded number of objects, and no per-object prompt.
+        return Sensitivity.PRIVILEGED
     if verb in MUTATE_VERBS:
         return Sensitivity.MUTATE
     if verb in READ_VERBS:
         return Sensitivity.SENSITIVE_READ if kind in SECRET_KINDS else Sensitivity.READ
-    return Sensitivity.MUTATE  # unknown verbs fail closed
+    # An unknown verb fails closed to the strictest level, not the
+    # second-strictest: a verb we have never seen is exactly the case where
+    # guessing low is unrecoverable. (An unrecognised *subresource* is not this
+    # case --- it falls through to its verb above, so `get deployments/status`
+    # stays an ordinary read.)
+    return Sensitivity.PRIVILEGED
 
 
 @dataclass(frozen=True)

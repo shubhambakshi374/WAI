@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from wai.cloud.base import Sensitivity
+
 
 class Decision(StrEnum):
     ALLOW = "allow"
@@ -49,11 +51,25 @@ class ApprovalRequest:
     protected: bool = False
     """The target matched a protected-context rule; the UI must demand more
     than a keypress."""
+    sensitivity: Sensitivity = Sensitivity.MUTATE
+    """Where this sits on the four-level scale. ``PRIVILEGED`` --- running code
+    in a container, minting a credential, rewriting RBAC, draining a node ---
+    demands the typed challenge and can never be granted standing approval."""
 
     @property
     def summary(self) -> str:
         where = f" in {self.target}" if self.target else ""
         return f"{self.action} {self.path}{where}"
+
+    @property
+    def needs_challenge(self) -> bool:
+        """Typing the target's name, rather than a keypress, is required."""
+        return self.protected or self.sensitivity.needs_challenge
+
+    @property
+    def may_grant_always(self) -> bool:
+        """Whether ``allow always`` may even be offered for this request."""
+        return not self.needs_challenge
 
 
 @runtime_checkable
@@ -110,14 +126,23 @@ class SessionApprovals:
         self._always.clear()
 
     async def request(self, req: ApprovalRequest) -> Decision:
-        if req.tool in self._always:
+        # A standing grant is keyed by tool name, but sensitivity is decided
+        # per call: `k8s_patch` allowed-always for a label edit must not carry
+        # over to the same tool creating an eviction. So a privileged request
+        # ignores the cache on the way in and refuses to fill it on the way out.
+        grantable = req.may_grant_always
+        if grantable and req.tool in self._always:
             return Decision.ALLOW
         async with self._lock:
             # Re-check: an earlier queued prompt may have granted it.
-            if req.tool in self._always:
+            if grantable and req.tool in self._always:
                 return Decision.ALLOW
             decision = await self._delegate.request(req)
         if decision is Decision.ALLOW_ALWAYS:
+            if not grantable:
+                # The UI should never have offered it. Honour the approval for
+                # this one call and drop the standing part on the floor.
+                return Decision.ALLOW
             self._always.add(req.tool)
             return Decision.ALLOW
         return decision

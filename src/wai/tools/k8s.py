@@ -623,6 +623,9 @@ class K8sMutatingTool(K8sTool):
 
     read_only: ClassVar[bool] = False
     action: ClassVar[str] = "change"
+    verb: ClassVar[str] = "update"
+    """The API verb this tool performs, for classification. Not the same as
+    ``action``, which is the word shown to the user."""
 
     async def confirm(
         self,
@@ -636,9 +639,16 @@ class K8sMutatingTool(K8sTool):
         diff: str,
         dry_run: str,
         recoverability: str = "",
+        verb: str = "",
+        subresource: str = "",
     ) -> ToolOutcome | None:
-        """None means go ahead."""
-        from wai.cloud.kube import KubeContext
+        """None means go ahead.
+
+        ``verb`` and ``subresource`` override the class defaults for tools whose
+        sensitivity varies per call --- ``k8s_delete`` doing a deletecollection,
+        ``k8s_create`` creating an eviction.
+        """
+        from wai.cloud.kube import KubeContext, classify
 
         target = KubeContext(name=context_name, namespace=namespace).target(namespace)
         rules = ctx.cloud.protection
@@ -650,6 +660,7 @@ class K8sMutatingTool(K8sTool):
                 summary="protected",
             )
 
+        sensitivity = classify(verb or self.verb, kind, subresource)
         decision = await ctx.approvals.request(
             ApprovalRequest(
                 tool=self.name,
@@ -661,6 +672,7 @@ class K8sMutatingTool(K8sTool):
                 recoverability=recoverability,
                 destructive=True,
                 protected=protected,
+                sensitivity=sensitivity,
             )
         )
         if decision is Decision.DENY:
@@ -671,6 +683,7 @@ class K8sMutatingTool(K8sTool):
 class K8sApplyTool(K8sMutatingTool):
     name: ClassVar[str] = "k8s_apply"
     action: ClassVar[str] = "apply"
+    verb: ClassVar[str] = "apply"
     description: ClassVar[str] = (
         "Create or update a resource from a manifest, via server-side apply. "
         "Call k8s_explain first if unsure of the schema: the API server "
@@ -751,6 +764,7 @@ class K8sApplyTool(K8sMutatingTool):
 class K8sDeleteTool(K8sMutatingTool):
     name: ClassVar[str] = "k8s_delete"
     action: ClassVar[str] = "delete"
+    verb: ClassVar[str] = "delete"
     description: ClassVar[str] = (
         "Delete a resource. Requires user approval and cannot be undone unless "
         "the manifest is stored elsewhere."
@@ -823,6 +837,7 @@ class K8sDeleteTool(K8sMutatingTool):
 class K8sScaleTool(K8sMutatingTool):
     name: ClassVar[str] = "k8s_scale"
     action: ClassVar[str] = "scale"
+    verb: ClassVar[str] = "scale"
     description: ClassVar[str] = (
         "Change the replica count of a Deployment, StatefulSet or ReplicaSet. "
         "Requires user approval."
@@ -900,6 +915,7 @@ class K8sScaleTool(K8sMutatingTool):
 class K8sRolloutTool(K8sMutatingTool):
     name: ClassVar[str] = "k8s_rollout"
     action: ClassVar[str] = "restart"
+    verb: ClassVar[str] = "patch"
     description: ClassVar[str] = (
         "Trigger a rolling restart of a Deployment, StatefulSet or DaemonSet, "
         "the same way `kubectl rollout restart` does. Requires user approval."

@@ -95,20 +95,72 @@ def test_python_method_name_conversion() -> None:
 
 
 @pytest.mark.parametrize(
-    ("verb", "kind", "expected"),
+    ("verb", "kind", "subresource", "expected"),
     [
-        ("get", "Pod", Sensitivity.READ),
-        ("list", "Deployment", Sensitivity.READ),
-        ("watch", "Pod", Sensitivity.READ),
-        ("get", "Secret", Sensitivity.SENSITIVE_READ),
-        ("list", "Secret", Sensitivity.SENSITIVE_READ),
-        ("delete", "Deployment", Sensitivity.MUTATE),
-        ("apply", "Deployment", Sensitivity.MUTATE),
-        ("frobnicate", "Pod", Sensitivity.MUTATE),
+        # Ordinary reads and writes.
+        ("get", "Pod", "", Sensitivity.READ),
+        ("list", "Deployment", "", Sensitivity.READ),
+        ("watch", "Pod", "", Sensitivity.READ),
+        ("delete", "Deployment", "", Sensitivity.MUTATE),
+        ("apply", "Deployment", "", Sensitivity.MUTATE),
+        ("patch", "Deployment", "", Sensitivity.MUTATE),
+        ("replace", "ConfigMap", "", Sensitivity.MUTATE),
+        # Credential material, whatever the verb.
+        ("get", "Secret", "", Sensitivity.SENSITIVE_READ),
+        ("list", "Secret", "", Sensitivity.SENSITIVE_READ),
+        ("get", "ServiceAccount", "", Sensitivity.SENSITIVE_READ),
+        # The subresource outranks the verb --- this is the whole point.
+        ("get", "Pod", "exec", Sensitivity.PRIVILEGED),
+        ("get", "Pod", "attach", Sensitivity.PRIVILEGED),
+        ("get", "Pod", "portforward", Sensitivity.PRIVILEGED),
+        ("create", "ServiceAccount", "token", Sensitivity.PRIVILEGED),
+        ("create", "Pod", "eviction", Sensitivity.PRIVILEGED),
+        ("update", "CertificateSigningRequest", "approval", Sensitivity.PRIVILEGED),
+        # ...but an ordinary subresource still follows its verb.
+        ("get", "Deployment", "status", Sensitivity.READ),
+        ("get", "Deployment", "scale", Sensitivity.READ),
+        ("patch", "Deployment", "scale", Sensitivity.MUTATE),
+        # Writing the authorization graph, or a node, is privileged.
+        ("patch", "ClusterRoleBinding", "", Sensitivity.PRIVILEGED),
+        ("create", "Role", "", Sensitivity.PRIVILEGED),
+        ("patch", "Node", "", Sensitivity.PRIVILEGED),
+        ("delete", "CustomResourceDefinition", "", Sensitivity.PRIVILEGED),
+        # ...but reading it is not.
+        ("get", "ClusterRoleBinding", "", Sensitivity.READ),
+        ("list", "Node", "", Sensitivity.READ),
+        # One call, an unbounded number of objects.
+        ("deletecollection", "Pod", "", Sensitivity.PRIVILEGED),
+        # Unknown verbs fail closed to the strictest level.
+        ("frobnicate", "Pod", "", Sensitivity.PRIVILEGED),
+        ("", "Pod", "", Sensitivity.PRIVILEGED),
     ],
 )
-def test_k8s_classification(verb: str, kind: str, expected: Sensitivity) -> None:
-    assert kube_cloud.classify(verb, kind) is expected
+def test_k8s_classification(verb: str, kind: str, subresource: str, expected: Sensitivity) -> None:
+    assert kube_cloud.classify(verb, kind, subresource) is expected
+
+
+def test_every_privileged_subresource_is_privileged_under_every_verb() -> None:
+    """The subresource decides alone. A read verb must not launder one."""
+    for subresource in kube_cloud.PRIVILEGED_SUBRESOURCES:
+        for verb in ("get", "list", "watch", "create", "update", "patch", "delete"):
+            assert kube_cloud.classify(verb, "Pod", subresource) is Sensitivity.PRIVILEGED, (
+                f"{verb} pods/{subresource} was not privileged"
+            )
+
+
+def test_subresource_matching_ignores_case_and_leading_slash() -> None:
+    for form in ("exec", "EXEC", "/exec"):
+        assert kube_cloud.classify("get", "Pod", form) is Sensitivity.PRIVILEGED
+
+
+def test_privileged_needs_a_challenge_and_lesser_levels_do_not() -> None:
+    assert Sensitivity.PRIVILEGED.needs_challenge
+    for level in (Sensitivity.READ, Sensitivity.SENSITIVE_READ, Sensitivity.MUTATE):
+        assert not level.needs_challenge
+    # Adding the tier must not have changed what needs approval at all.
+    assert not Sensitivity.READ.needs_approval
+    for level in (Sensitivity.SENSITIVE_READ, Sensitivity.MUTATE, Sensitivity.PRIVILEGED):
+        assert level.needs_approval
 
 
 # ------------------------------------------------------------------ redaction

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from wai.cloud.base import Sensitivity
 from wai.tools import ToolContext, default_registry
 from wai.tools.approval import (
     AllowAll,
@@ -151,6 +152,62 @@ async def test_always_allow_can_be_revoked(registry, tree) -> None:  # type: ign
     await run(registry, "write_file", {"path": "a.txt", "content": "1"}, ctx)
     approvals.revoke_all()
     await run(registry, "write_file", {"path": "b.txt", "content": "2"}, ctx)
+    assert len(inner.seen) == 2
+
+
+async def test_privileged_requests_never_earn_a_standing_grant() -> None:
+    """A standing `allow always` on exec is indistinguishable from no gate.
+
+    Enforced in ``SessionApprovals`` rather than the modal, so a caller that
+    never draws a modal --- the CLI, the Phase 3 engine --- cannot route around
+    it by answering ALLOW_ALWAYS itself.
+    """
+    inner = RecordingPolicy(decision=Decision.ALLOW_ALWAYS)
+    approvals = SessionApprovals(inner)
+    req = ApprovalRequest(
+        tool="k8s_exec", action="exec", path="pod/web", sensitivity=Sensitivity.PRIVILEGED
+    )
+
+    assert await approvals.request(req) is Decision.ALLOW, "this one call is still allowed"
+    assert approvals.always_allowed == frozenset(), "but nothing was recorded"
+    assert await approvals.request(req) is Decision.ALLOW
+    assert len(inner.seen) == 2, "every privileged call must ask again"
+
+
+async def test_a_standing_grant_does_not_carry_into_a_privileged_call() -> None:
+    """Sensitivity is per call, but the grant is keyed by tool name.
+
+    ``k8s_patch`` allowed-always for a label edit must not silently cover the
+    same tool creating an eviction.
+    """
+    inner = RecordingPolicy(decision=Decision.ALLOW_ALWAYS)
+    approvals = SessionApprovals(inner)
+
+    ordinary = ApprovalRequest(tool="k8s_patch", action="patch", path="deployment/web")
+    await approvals.request(ordinary)
+    assert approvals.always_allowed == frozenset({"k8s_patch"})
+
+    await approvals.request(ordinary)
+    assert len(inner.seen) == 1, "the ordinary repeat is covered by the grant"
+
+    escalated = ApprovalRequest(
+        tool="k8s_patch",
+        action="patch",
+        path="clusterrolebinding/admin",
+        sensitivity=Sensitivity.PRIVILEGED,
+    )
+    await approvals.request(escalated)
+    assert len(inner.seen) == 2, "the privileged call must ask despite the grant"
+
+
+async def test_protected_targets_also_refuse_a_standing_grant() -> None:
+    inner = RecordingPolicy(decision=Decision.ALLOW_ALWAYS)
+    approvals = SessionApprovals(inner)
+    req = ApprovalRequest(tool="k8s_apply", action="apply", path="deployment/web", protected=True)
+
+    await approvals.request(req)
+    assert approvals.always_allowed == frozenset()
+    await approvals.request(req)
     assert len(inner.seen) == 2
 
 

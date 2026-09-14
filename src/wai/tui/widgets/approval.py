@@ -5,7 +5,9 @@ you cannot see is not consent, and a prompt that only says "write_file wants
 to modify main.py" trains people to hit yes.
 
 The escalation button is deliberately the least prominent of the three, and
-says which tool it applies to.
+says which tool it applies to. It disappears entirely for a protected target or
+a privileged operation --- a standing grant on ``k8s_exec`` would be
+indistinguishable from having no gate at all, so it is never on offer.
 """
 
 from __future__ import annotations
@@ -22,6 +24,23 @@ from wai.tools.approval import ApprovalRequest, Decision
 
 if TYPE_CHECKING:
     from textual.app import App
+
+#: Why a given tool is privileged, in the user's terms rather than the API's.
+#: "k8s_exec wants approval" is not a decision anyone can make; "runs a command
+#: inside a running container" is.
+PRIVILEGED_REASONS = {
+    "k8s_exec": "runs a command inside a running container",
+    "k8s_attach": "joins a process already running in a container",
+    "k8s_cp": "copies files between your machine and a container",
+    "k8s_port_forward": "opens a tunnel from this machine into the cluster network",
+    "k8s_drain": "evicts every pod from a node and takes it out of service",
+    "k8s_node": "changes whether a node accepts work",
+    "k8s_patch": "changes who may do what, or takes capacity out of service",
+    "k8s_create": "mints a credential or grants rights",
+    "k8s_delete": "removes an unbounded set of objects in one call",
+    "k8s_kubectl": "runs a cluster command outside WAI's structured tools",
+    "helm": "installs or removes a release, many objects at once",
+}
 
 
 class ApprovalModal(ModalScreen[Decision]):
@@ -74,9 +93,10 @@ class ApprovalModal(ModalScreen[Decision]):
     def __init__(self, request: ApprovalRequest) -> None:
         super().__init__()
         self.request = request
-        #: The token a protected target demands. Typing the name is the whole
-        #: point: it forces you to read which environment you are changing.
-        self.challenge = _challenge(request.target) if request.protected else ""
+        #: The token a protected or privileged operation demands. Typing the
+        #: name is the whole point: it forces you to read which environment you
+        #: are changing.
+        self.challenge = _challenge(request.target) if request.needs_challenge else ""
 
     def compose(self) -> ComposeResult:
         req = self.request
@@ -86,10 +106,7 @@ class ApprovalModal(ModalScreen[Decision]):
             if req.target:
                 yield Label(req.target, classes="target")
             if self.challenge:
-                yield Label(
-                    f"⚠ PROTECTED ENVIRONMENT — type  {self.challenge}  to confirm",
-                    classes="protected",
-                )
+                yield Label(self._challenge_banner(), classes="protected")
                 yield Input(placeholder=self.challenge, id="challenge")
             if req.dry_run:
                 yield Label(f"✓ {req.dry_run}", classes="dry-run")
@@ -108,6 +125,16 @@ class ApprovalModal(ModalScreen[Decision]):
                     yield Button(f"Always allow {req.tool}  (a)", id="always")
                 yield Button("Approve  (y)", variant="success", id="approve")
 
+    def _challenge_banner(self) -> str:
+        """Say *why* a name has to be typed. The two reasons are not the same:
+        one is where the change lands, the other is what the change can do."""
+        req = self.request
+        if req.sensitivity.needs_challenge:
+            reason = PRIVILEGED_REASONS.get(req.tool, "runs with elevated privilege")
+            where = " IN A PROTECTED ENVIRONMENT" if req.protected else ""
+            return f"⚠ PRIVILEGED{where} — {reason}\n  type  {self.challenge}  to confirm"
+        return f"⚠ PROTECTED ENVIRONMENT — type  {self.challenge}  to confirm"
+
     def _render_diff(self) -> str:
         return self.request.diff or "(no preview available)"
 
@@ -125,10 +152,12 @@ class ApprovalModal(ModalScreen[Decision]):
         return typed == self.challenge
 
     def _refuse_unconfirmed(self) -> None:
-        self.notify(
-            f"Type {self.challenge} to confirm a change to a protected environment.",
-            severity="warning",
+        what = (
+            "a privileged operation"
+            if self.request.sensitivity.needs_challenge
+            else "a change to a protected environment"
         )
+        self.notify(f"Type {self.challenge} to confirm {what}.", severity="warning")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         choice = {

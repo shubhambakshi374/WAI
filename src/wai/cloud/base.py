@@ -13,20 +13,36 @@ from enum import StrEnum
 
 
 class Sensitivity(StrEnum):
-    """Three levels, not two.
+    """Four levels, not two.
 
     A read/mutate split calls ``sts:GetSessionToken`` a read and lets the model
     fetch live credentials without anyone being asked. Anything that returns
     secret material is its own class.
+
+    ``PRIVILEGED`` is the fourth because the Kubernetes verb alone lies about
+    the blast radius: ``get pods`` is a read, and ``get pods/exec`` is arbitrary
+    code execution inside a container. Both are ``get``. Anything that runs
+    code, mints a credential, rewrites who may do what, or takes a node out of
+    service belongs here rather than in ``MUTATE``.
     """
 
     READ = "read"
     SENSITIVE_READ = "sensitive_read"
     MUTATE = "mutate"
+    PRIVILEGED = "privileged"
 
     @property
     def needs_approval(self) -> bool:
         return self is not Sensitivity.READ
+
+    @property
+    def needs_challenge(self) -> bool:
+        """Demand the target's name typed out, never a single keypress.
+
+        Also the flag that forbids a standing ``allow always`` grant: one on
+        ``k8s_exec`` would be indistinguishable from having no gate at all.
+        """
+        return self is Sensitivity.PRIVILEGED
 
 
 class ProtectionMode(StrEnum):
