@@ -59,11 +59,26 @@ def build_system_prompt(session: Session, registry: ToolRegistry) -> str | None:
     if session.system:
         parts.append(session.system)
     if session.tools_enabled and session.model_supports_tools and len(registry):
+        # Describe the registry actually in hand. Saying "read-only" while
+        # write_file is declared taught the model to refuse edits it could
+        # have made, and to tell the user it had no access it did have.
+        can_write = any(not tool.read_only for tool in registry)
+        access = (
+            "You can read and modify a workspace on the user's machine"
+            if can_write
+            else "You have read-only access to a workspace on the user's machine"
+        )
         parts.append(
-            "You have read-only access to a workspace on the user's machine, "
-            f"rooted at {session.workspace_root}.\n"
+            f"{access}, rooted at {session.workspace_root}.\n"
             f"Tools available: {', '.join(registry.names)}.\n"
-            "Paths are relative to the workspace root. You cannot read outside it, "
+            + (
+                "Every write or deletion asks the user for approval first, so "
+                "propose the edit by making the call rather than printing a patch "
+                "and asking permission in prose.\n"
+                if can_write
+                else ""
+            )
+            + "Paths are relative to the workspace root. You cannot read outside it, "
             "and credential files (.env, private keys, and similar) are blocked by "
             "design. Prefer glob and grep to locate code before reading whole files."
         )

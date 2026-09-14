@@ -334,6 +334,27 @@ def test_system_prompt_names_the_workspace_and_tools(session, registry) -> None:
     assert "read_file" in prompt and "grep" in prompt
 
 
+def test_system_prompt_does_not_claim_read_only_when_it_can_write(session) -> None:  # type: ignore[no-untyped-def]
+    """Saying "read-only" while write_file is declared made the model refuse
+    edits it could make, and report access it did have as missing."""
+    from wai.tools.registry import default_registry
+
+    prompt = build_system_prompt(session, default_registry(writes=True, kubernetes=False))
+    assert prompt is not None
+    assert "read-only access" not in prompt
+    assert "read and modify" in prompt
+    assert "approval" in prompt
+
+
+def test_system_prompt_still_says_read_only_without_write_tools(session) -> None:  # type: ignore[no-untyped-def]
+    from wai.tools.registry import default_registry
+
+    prompt = build_system_prompt(session, default_registry(writes=False, kubernetes=False))
+    assert prompt is not None
+    assert "read-only access" in prompt
+    assert "write_file" not in prompt
+
+
 def test_system_prompt_keeps_the_profile_prompt_first(session, registry) -> None:  # type: ignore[no-untyped-def]
     session.system = "You are a careful SRE."
     prompt = build_system_prompt(session, registry)

@@ -49,6 +49,6 @@ class AzureFoundryProvider(OpenAIProvider):
             http_client=self._http_client(),
         )
 
-    async def list_models(self) -> list[ModelInfo]:  # type: ignore[override]
+    async def list_models(self) -> list[ModelInfo]:
         """Azure exposes deployments, not models; there is nothing to enumerate."""
         return []
