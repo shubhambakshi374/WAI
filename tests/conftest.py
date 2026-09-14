@@ -32,6 +32,33 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(keyring, "set_password", lambda s, u, p: vault.__setitem__((s, u), p))
     monkeypatch.setattr(keyring, "delete_password", lambda s, u: vault.pop((s, u), None))
     monkeypatch.setattr("wai.config.secrets._keyring_get", lambda _provider: None)
+    # Bedrock authenticates through the AWS chain, and botocore reads ~/.aws
+    # and AWS_* itself --- outside everything patched above. A developer with
+    # working AWS credentials therefore had one provider configured and CI had
+    # none, so the TUI opened the chat screen here and the first-run wizard
+    # there, and fifty-two tests passed locally and failed on the runner.
+    for key in list(os.environ):
+        if key.startswith("AWS_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-aws-credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+
+@pytest.fixture(autouse=True)
+def one_provider_configured(
+    isolated_dirs: None, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Give the default provider a key, so the baseline is a usable app.
+
+    Without this the isolation above leaves nothing configured, the chat
+    screen opens the first-run wizard over itself, and every test that reaches
+    for the Composer fails. Which state a test wants is now explicit: this is
+    the default, and ``_no_credentials`` is how a test asks for the other one.
+    """
+    if "unconfigured" in request.keywords:
+        return
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
 
 class FakeProvider(BaseProvider):
