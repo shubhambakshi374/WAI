@@ -100,6 +100,29 @@ class K8sSettings(BaseModel):
     """Seconds before an exec is cut off and what it printed so far returned."""
 
 
+class AwsSettings(BaseModel):
+    """Which classes of AWS capability this machine offers.
+
+    Unlike the Kubernetes switches, most of these cannot work by withholding a
+    tool: the same ``aws_write`` tags a volume and rewrites a trust policy. They
+    are checked at the approval gate instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_writes: bool = True
+    """Any mutating call at all."""
+    allow_iam_writes: bool = True
+    """Writes to IAM, STS, Organizations, KMS and the other identity services."""
+    allow_delete: bool = True
+    """Terminate, delete, destroy --- the irreversible verbs."""
+    allow_cost_explorer: bool = True
+    """Cost Explorer bills per request, so it can be switched off entirely."""
+    max_results: int = 500
+    """Results returned from one call. Paginators will happily walk a hundred
+    thousand objects, and the model pays for every one of them."""
+
+
 class CloudSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -125,6 +148,7 @@ class CloudSettings(BaseModel):
     )
     protected: ProtectedSettings = Field(default_factory=ProtectedSettings)
     k8s: K8sSettings = Field(default_factory=K8sSettings)
+    aws: AwsSettings = Field(default_factory=AwsSettings)
 
 
 class UISettings(BaseModel):

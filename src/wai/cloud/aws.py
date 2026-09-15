@@ -311,6 +311,17 @@ def describe_operation(service: str, operation: str) -> dict[str, Any]:
     }
 
 
+def input_shape(service: str, operation: str) -> set[str] | None:
+    """Member names an operation accepts, or None when it takes nothing.
+
+    Used to ask whether DryRun is available rather than assuming it from the
+    service: 758 of EC2's 802 operations take it and 44 do not.
+    """
+    model = _service_model(service).operation_model(operation)
+    shape = model.input_shape
+    return None if shape is None else set(shape.members)
+
+
 def python_method(operation: str) -> str:
     """botocore's API name for an operation: DescribeInstances -> describe_instances."""
     return re.sub(r"(?<!^)(?=[A-Z])", "_", operation).lower()
