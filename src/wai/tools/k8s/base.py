@@ -108,6 +108,15 @@ class K8sMutatingTool(K8sTool):
             )
 
         sensitivity = classify(verb or self.verb, kind, subresource or self.subresource)
+        if not getattr(ctx.cloud, "allow_rbac_writes", True) and _is_rbac_write(
+            verb or self.verb, kind, subresource or self.subresource
+        ):
+            return ToolOutcome.error(
+                f"writing {kind} is disabled: [cloud.k8s] allow_rbac_writes is false. "
+                "This one cannot be enforced by withholding a tool --- the same k8s_apply "
+                "writes a ConfigMap --- so it is refused here instead.",
+                summary="rbac writes off",
+            )
         decision = await ctx.approvals.request(
             ApprovalRequest(
                 tool=self.name,
@@ -125,3 +134,26 @@ class K8sMutatingTool(K8sTool):
         if decision is Decision.DENY:
             return ToolOutcome.rejected("The user rejected this change.")
         return None
+
+
+def _is_rbac_write(verb: str, kind: str, subresource: str) -> bool:
+    """Does this change who may do what, or mint a credential?"""
+    from wai.cloud.kube import MUTATE_VERBS
+
+    if subresource.casefold() in {"token", "approval", "escalate", "impersonate", "binding"}:
+        return True
+    return verb.casefold() in MUTATE_VERBS and kind in RBAC_KINDS
+
+
+#: The subset of PRIVILEGED_KINDS that is specifically about authorization.
+#: Draining a node is privileged too, but it is not an RBAC write.
+RBAC_KINDS = frozenset(
+    {
+        "Role",
+        "ClusterRole",
+        "RoleBinding",
+        "ClusterRoleBinding",
+        "ServiceAccount",
+        "CertificateSigningRequest",
+    }
+)

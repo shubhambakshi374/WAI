@@ -344,5 +344,6 @@ def build_cloud_context(config: Config) -> CloudContext:
         ),
         on_context_change=remember,
         exec_timeout=settings.k8s.exec_timeout,
+        allow_rbac_writes=settings.k8s.allow_rbac_writes,
         port_forwards=forwards,
     )

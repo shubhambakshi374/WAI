@@ -39,6 +39,10 @@ class CloudContext:
     """Called after a switch, to persist it. Optional: a headless run that
     should not write config simply leaves it unset."""
     exec_timeout: int = 60
+    allow_rbac_writes: bool = True
+    """Creating or changing Roles, Bindings, ServiceAccounts and CSRs. Cannot
+    be enforced by not registering a tool --- the same k8s_apply writes a
+    ConfigMap and a ClusterRoleBinding --- so it is checked at the gate."""
     port_forwards: Any = None
     """A ``wai.tools.k8s.streams.PortForwards``. Built per session so a tunnel
     cannot outlive the session that opened it."""

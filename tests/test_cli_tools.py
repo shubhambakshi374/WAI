@@ -252,3 +252,78 @@ def test_disabled_classes_are_reportable() -> None:
     off = disabled_classes(K8sSettings(allow_exec=False, allow_cli=False))
     assert len(off) == 2
     assert any("exec" in text for text in off)
+
+
+# --------------------------------------------------------- RBAC writes switch
+
+
+async def test_rbac_writes_off_refuses_at_the_gate(tmp_path: Path) -> None:
+    """This one cannot be enforced by withholding a tool: the same k8s_apply
+    writes a ConfigMap and a ClusterRoleBinding."""
+    from wai.tools.k8s import k8s_tools
+
+    apply_tool = next(t for t in k8s_tools() if t.name == "k8s_apply")
+    policy = RecordingPolicy(Decision.ALLOW)
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(allow_rbac_writes=False),
+    )
+    out = await apply_tool.confirm(
+        ctx,
+        client=None,
+        context_name="AKS_QAM",
+        kind="ClusterRoleBinding",
+        name="admin",
+        namespace="",
+        diff="",
+        dry_run="",
+    )
+    assert out is not None and out.is_error
+    assert "allow_rbac_writes" in out.content
+    assert policy.seen == [], "refused before anyone is asked"
+
+
+async def test_rbac_writes_off_leaves_ordinary_objects_alone(tmp_path: Path) -> None:
+    from wai.tools.k8s import k8s_tools
+
+    apply_tool = next(t for t in k8s_tools() if t.name == "k8s_apply")
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=RecordingPolicy(Decision.ALLOW),
+        cloud=CloudContext(allow_rbac_writes=False),
+    )
+    out = await apply_tool.confirm(
+        ctx,
+        client=None,
+        context_name="AKS_QAM",
+        kind="ConfigMap",
+        name="app-config",
+        namespace="shop",
+        diff="",
+        dry_run="",
+    )
+    assert out is None, "a ConfigMap is not an RBAC write"
+
+
+async def test_minting_a_token_counts_as_an_rbac_write(tmp_path: Path) -> None:
+    from wai.tools.k8s import k8s_tools
+
+    create = next(t for t in k8s_tools() if t.name == "k8s_create")
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=RecordingPolicy(Decision.ALLOW),
+        cloud=CloudContext(allow_rbac_writes=False),
+    )
+    out = await create.confirm(
+        ctx,
+        client=None,
+        context_name="AKS_QAM",
+        kind="ServiceAccount",
+        name="builder",
+        namespace="shop",
+        diff="",
+        dry_run="",
+        subresource="token",
+    )
+    assert out is not None and out.is_error
