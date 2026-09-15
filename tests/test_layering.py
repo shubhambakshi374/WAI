@@ -15,7 +15,7 @@ import pytest
 
 import wai
 
-HEADLESS_PACKAGES = ("core", "providers", "config", "storage", "tools", "cloud")
+HEADLESS_PACKAGES = ("core", "providers", "config", "storage", "tools", "cloud", "render")
 SRC = Path(wai.__file__).parent
 
 

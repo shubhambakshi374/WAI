@@ -34,10 +34,12 @@ dependencies = [
 
 [project.optional-dependencies]
 k8s = ["kubernetes>=32.0"]
+graphics = ["textual-image[textual]>=0.14"]
 azure = ["azure-identity>=1.20", "azure-mgmt-core>=1.5"]
 gcp = ["google-api-python-client>=2.150", "google-auth>=2.35"]
 all = [
     "kubernetes>=32.0",
+    "textual-image[textual]>=0.14",
     "azure-identity>=1.20",
     "azure-mgmt-core>=1.5",
     "google-api-python-client>=2.150",
