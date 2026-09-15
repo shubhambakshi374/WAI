@@ -1663,3 +1663,136 @@ async def test_zoom_and_pan_re_render_rather_than_scale(monkeypatch) -> None:  #
 
     widget.view = View()
     assert widget.view.offset == (0.0, 0.0), "fit returns to the origin"
+
+
+# -------------------------------------------------------------- dashboard
+
+
+def _k8s_registry(objects=None):  # type: ignore[no-untyped-def]
+    """A registry whose k8s tools answer from recorded payloads."""
+    from pathlib import Path
+
+    from tests.test_k8s import CLUSTER, FakeClient, FakeProvider
+    from wai.cloud.base import ProtectionRules
+    from wai.tools import ToolRegistry
+    from wai.tools.base import CloudContext, ToolContext
+    from wai.tools.k8s import k8s_tools
+    from wai.workspace import Workspace
+
+    client = FakeClient(objects if objects is not None else CLUSTER)
+    registry = ToolRegistry(k8s_tools())
+    context = ToolContext(
+        workspace=Workspace(root=Path(".")),
+        cloud=CloudContext(k8s=FakeProvider(client), protection=ProtectionRules()),
+    )
+    return registry, context
+
+
+async def test_the_dashboard_populates_itself(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Waiting for the agent to call the right four tools would leave the
+    screen blank on open, which is not a dashboard."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from wai.tui.screens.dashboard import PANELS, DashboardScreen, Panel
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        app.push_screen(DashboardScreen("shop"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panels = list(app.screen.query(Panel))
+        assert len(panels) == len(PANELS)
+        for panel in panels:
+            assert panel.children, f"{panel.title_text} drew nothing"
+
+
+async def test_every_dashboard_panel_is_a_read() -> None:
+    """The dashboard runs tools on open without asking. That is only
+    acceptable because none of them can change anything."""
+    from wai.tools.k8s import k8s_tools
+    from wai.tui.screens.dashboard import PANELS
+
+    by_name = {tool.name: tool for tool in k8s_tools()}
+    for _title, name, _args in PANELS:
+        assert by_name[name].read_only, f"{name} is not a read"
+
+
+async def test_a_failing_panel_does_not_blank_the_others(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """RBAC often permits some reads and not others."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from tests.test_k8s import CLUSTER
+    from wai.tui.screens.dashboard import DashboardScreen, Panel
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        registry, context = _k8s_registry(CLUSTER)
+        original = registry.execute
+
+        async def flaky(name, args, ctx):  # type: ignore[no-untyped-def]
+            if name == "k8s_top":
+                raise RuntimeError("forbidden")
+            return await original(name, args, ctx)
+
+        registry.execute = flaky  # type: ignore[method-assign]
+        app.registry, app.tool_ctx = registry, context
+        app.push_screen(DashboardScreen("shop"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = " ".join(
+            str(child.content)
+            for panel in app.screen.query(Panel)
+            for child in panel.children
+            if hasattr(child, "content")
+        )
+        assert "forbidden" in rendered, "the failure is reported"
+        assert len(list(app.screen.query(Panel))) == 4, "and the rest still stand"
+
+
+async def test_changing_the_namespace_reloads(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("os.environ", APPLE)
+    from textual.widgets import Input
+
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        screen = DashboardScreen("shop")
+        app.push_screen(screen)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+
+        field = screen.query_one("#namespace", Input)
+        field.value = "other"
+        await field.action_submit()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert screen.namespace == "other"
+
+
+async def test_dashboard_command_refuses_without_kubernetes() -> None:
+    from wai.tools import ToolRegistry
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry = ToolRegistry([])
+        await _send(pilot, "/dashboard")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "not available" in _notices(pilot)
+
+
+async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("os.environ", APPLE)
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        await _send(pilot, "/dashboard shop")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        assert app.screen.namespace == "shop"

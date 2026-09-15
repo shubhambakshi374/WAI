@@ -284,6 +284,19 @@ async def cmd_tools(app: WaiApp, args: list[str]) -> CommandResult:
     return CommandResult("\n".join(rows), title="Tools")
 
 
+async def cmd_dashboard(app: WaiApp, args: list[str]) -> CommandResult:
+    """Four read-only views of one namespace, on one screen."""
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    if "k8s_topology" not in app.registry:
+        return CommandResult.error(
+            "Kubernetes tools are not available. Install the extra with: uv sync --extra k8s"
+        )
+    namespace = args[0] if args else "default"
+    app.push_screen(DashboardScreen(namespace, setting=app.config.ui.graphics))
+    return CommandResult.silent()
+
+
 async def cmd_graphics(app: WaiApp, args: list[str]) -> CommandResult:
     """What is being drawn and why --- the answer to "where are my pictures"."""
     from wai.render.capability import Support, available, detect, explain, images_installed
@@ -355,6 +368,12 @@ def build_registry() -> CommandRegistry:
         Command("login", "Cloud auth status, or sign in", "login [<cloud>]", cmd_login),
         Command("kube", "Kubernetes contexts", "kube [use <ctx> | add <path>]", cmd_kube),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),
+        Command(
+            "dashboard",
+            "Topology, usage and storage on one screen",
+            "dashboard [<namespace>]",
+            cmd_dashboard,
+        ),
         Command(
             "graphics",
             "How visuals are drawn, and why",
