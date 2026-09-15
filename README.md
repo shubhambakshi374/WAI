@@ -1,4 +1,4 @@
-# WAI
+# Altus
 
 A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
@@ -14,57 +14,57 @@ into a software factory.
 Requires Python 3.14+, or [uv](https://docs.astral.sh/uv/), which fetches an
 interpreter for you.
 
-**WAI is not on PyPI**, so `uv tool install wai` will not work. Clone it:
+**Altus is not on PyPI**, so `uv tool install altus` will not work. Clone it:
 
 ```bash
-git clone https://github.com/shubhambakshi374/WAI
-cd WAI
+git clone https://github.com/shubhambakshi374/altus
+cd altus
 uv sync
-uv run wai              # the TUI
-uv run wai tools list   # anything else
+uv run altus              # the TUI
+uv run altus tools list   # anything else
 ```
 
-To get a `wai` command on your PATH instead of typing `uv run`:
+To get an `altus` command on your PATH instead of typing `uv run`:
 
 ```bash
 uv tool install .                 # from a clone
 uv tool install --editable .      # ...or track your edits live
-uvx --from . wai --version        # ...or run it once, installing nothing
+uvx --from . altus --version        # ...or run it once, installing nothing
 ```
 
 That installs a snapshot, so after changing the code either re-run it with
-`--force` or use `--editable` from the start. `uv tool uninstall wai` removes
+`--force` or use `--editable` from the start. `uv tool uninstall altus` removes
 it. Installing straight from the remote works too, without cloning:
 
 ```bash
-uv tool install git+https://github.com/shubhambakshi374/WAI
+uv tool install git+https://github.com/shubhambakshi374/altus
 ```
 
 ## Quick start
 
-Just start it. WAI runs with nothing configured and walks you through setup on
+Just start it. Altus runs with nothing configured and walks you through setup on
 first launch:
 
 ```bash
-wai                              # launch the TUI
+altus                              # launch the TUI
 ```
 
 The wizard asks which provider, takes your API key, **checks it against the
 provider** before accepting it, and then lets you pick a default model from
 what that key can actually reach. `/setup` reopens it any time, and `escape`
-skips it --- the rest of WAI still works.
+skips it --- the rest of Altus still works.
 
 Prefer the shell?
 
 ```bash
-wai config set-key anthropic     # stored in the OS keyring, never on disk
-wai config doctor                # which providers can authenticate
+altus config set-key anthropic     # stored in the OS keyring, never on disk
+altus config doctor                # which providers can authenticate
 ```
 
 Headless, for scripts and CI:
 
 ```bash
-wai chat --once "explain this failing rollout" --model claude-sonnet-5
+altus chat --once "explain this failing rollout" --model claude-sonnet-5
 ```
 
 ## The workspace
@@ -73,15 +73,15 @@ Every session has a **workspace**: a rooted filesystem context the model can
 read. It defaults to the current directory.
 
 ```bash
-wai tools list                                   # what the model can call, and where
-wai chat --once "what does the retry logic do?"  # the model reads the repo to answer
-wai --allow-path /etc/nginx                      # add a root
-wai --no-tools                                   # plain chat
+altus tools list                                   # what the model can call, and where
+altus chat --once "what does the retry logic do?"  # the model reads the repo to answer
+altus --allow-path /etc/nginx                      # add a root
+altus --no-tools                                   # plain chat
 ```
 
 The workspace is also the Phase 2 primitive: a flow will construct one and
 hand the same instance to every step, which is why it lives in
-`wai/workspace.py` rather than inside the tools.
+`altus/workspace.py` rather than inside the tools.
 
 | Tool | What it does | |
 |---|---|---|
@@ -104,7 +104,7 @@ plus whether git could get the file back:
 
 ```
 EDIT — approval required
-src/wai/core/retry.py
+src/altus/core/retry.py
 tracked by git and unmodified — recoverable with git checkout
 
   @@ -12,7 +12,7 @@
@@ -123,11 +123,11 @@ is refused rather than guessed at. `write_file` is for new files and full
 rewrites; the model is told to prefer `edit_file`, which keeps diffs small and
 reviewable.
 
-Headless runs cannot prompt, so `wai chat --once` **refuses changes** unless
+Headless runs cannot prompt, so `altus chat --once` **refuses changes** unless
 you pass `--yes`:
 
 ```bash
-wai chat --once "bump the version" --yes
+altus chat --once "bump the version" --yes
 ```
 
 Writes additionally refuse anything inside `.git`, and the same secret
@@ -145,7 +145,7 @@ Two rules, both enforced in `Workspace.resolve` before anything touches disk:
 2. **No credential files, even inside the workspace** --- `.env*`, `*.pem`,
    `*.key`, `id_rsa*`, `.netrc`, `.npmrc`, `.aws/credentials` and similar.
 
-The second rule exists because WAI ships file contents to external model
+The second rule exists because Altus ships file contents to external model
 providers by design. "Model reads `.env`, quotes it back, key lands in a
 provider's logs" is the most plausible way this tool leaks a credential.
 Refusals are explicit, so the model reports them instead of retrying. Set
@@ -185,7 +185,7 @@ for the command you are writing.
 | `/tools` | Tools, installed integrations, standing approvals |
 | `/new` | Start a fresh session |
 
-`wai login` and `wai kube list|use|add` do the same from the shell.
+`altus login` and `altus kube list|use|add` do the same from the shell.
 
 ## AWS
 
@@ -319,8 +319,8 @@ uv tool install '.[k8s]'    # from a clone; or aws, azure, gcp, all
 uv sync --extra k8s         # ...or just for a dev checkout
 ```
 
-Once WAI is on PyPI these become `wai[k8s]`. Until then the hints WAI prints
-use the forms above, because `uv tool install 'wai[k8s]'` would simply fail.
+Once Altus is on PyPI these become `altus[k8s]`. Until then the hints Altus prints
+use the forms above, because `uv tool install 'altus[k8s]'` would simply fail.
 
 Uninstalled integrations show up in `/tools` with the command to add them,
 rather than silently not being there.
@@ -333,13 +333,13 @@ works without a registered client, so there is no way around that.
 ### Two things it does not do
 
 **It does not modify `~/.kube/config` by default.** `/kube use` records the
-context in WAI's own config, because changing your global context as a side
+context in Altus's own config, because changing your global context as a side
 effect of a chat message would silently retarget every other terminal you have
 open. If you want kubectl-like behaviour:
 
 ```toml
 [cloud]
-kube_context_scope = "global"   # default "wai"
+kube_context_scope = "global"   # default "altus"
 ```
 
 or per invocation: `/kube use <ctx> --global` (and `--local` to override the
@@ -424,15 +424,15 @@ together. Nothing local ever touches your OS keyring.
 
 ### Tool support is detected, not assumed
 
-WAI's filesystem and Kubernetes tools need a model that can call tools, and
-plenty of good local models cannot. Ollama reports this, so WAI reads it:
+Altus's filesystem and Kubernetes tools need a model that can call tools, and
+plenty of good local models cannot. Ollama reports this, so Altus reads it:
 
 ```
 llama3.2:latest  (3.2B, Q4_K_M)              tools
 tinyllama:latest (1.1B, Q4_0)                no tools
 ```
 
-Choose a model without tool support and WAI declares no tools and says so —
+Choose a model without tool support and Altus declares no tools and says so —
 offering them produces hallucinated call syntax or a hard error, which is far
 more confusing than being told. vLLM and llama.cpp report nothing, so those
 are assumed capable; override with `supports_tools = false` on the profile.
@@ -443,8 +443,8 @@ the status line says the model is loading rather than looking hung.
 
 ## Configuration
 
-`wai config path` prints the location (`~/.config/wai/config.toml` on Linux,
-`~/Library/Application Support/wai/config.toml` on macOS). It never contains
+`altus config path` prints the location (`~/.config/altus/config.toml` on Linux,
+`~/Library/Application Support/altus/config.toml` on macOS). It never contains
 secrets.
 
 ```toml
@@ -486,36 +486,36 @@ completes, so an interrupted run never loses history.
 ## Architecture
 
 ```
-wai/core        normalized types, the event unions, retries
-wai/providers   one adapter per provider, all folding onto that union
-wai/config      configuration and credential resolution
-wai/storage     JSONL session persistence
-wai/workspace   the rooted filesystem context, and its containment rules
-wai/tools       read-only filesystem tools
-wai/runner      one inference call
-wai/agent       the loop: inference, tool execution, repeat
-wai/tui         the Textual front end
+altus/core        normalized types, the event unions, retries
+altus/providers   one adapter per provider, all folding onto that union
+altus/config      configuration and credential resolution
+altus/storage     JSONL session persistence
+altus/workspace   the rooted filesystem context, and its containment rules
+altus/tools       read-only filesystem tools
+altus/runner      one inference call
+altus/agent       the loop: inference, tool execution, repeat
+altus/tui         the Textual front end
 ```
 
-**`wai.core`, `wai.providers`, `wai.workspace`, `wai.tools` and `wai.agent`
+**`altus.core`, `altus.providers`, `altus.workspace`, `altus.tools` and `altus.agent`
 must never import `textual`.** The Phase 2
 workflow engine drives providers headlessly; if the provider layer were
 entangled with the UI, Phase 2 would start with a rewrite. `tests/test_layering.py`
-enforces this — if it fails, move the offending code into `wai.tui` rather than
+enforces this — if it fails, move the offending code into `altus.tui` rather than
 deleting the test.
 
 Every adapter normalizes its provider's stream onto one event union
-(`wai/core/events.py`), which already defines tool-call and reasoning events
+(`altus/core/events.py`), which already defines tool-call and reasoning events
 even though Phase 1 emits only text. That is deliberate: it keeps the agent
 loop from being a breaking change.
 
 ## Development
 
 ```bash
-git clone https://github.com/shubhambakshi374/WAI && cd WAI
-uv sync --all-groups        # also pulls every cloud extra: the dev group depends on wai[all]
-uv run wai                  # the TUI, straight from the checkout
-uvx --from . wai --version  # or run it once in a throwaway env, installing nothing
+git clone https://github.com/shubhambakshi374/altus && cd altus
+uv sync --all-groups        # also pulls every cloud extra: the dev group depends on altus[all]
+uv run altus                  # the TUI, straight from the checkout
+uvx --from . altus --version  # or run it once in a throwaway env, installing nothing
 ```
 
 ### The check suite
@@ -539,7 +539,7 @@ uv run pytest
 
 `tests/test_layering.py` asserts that `core`, `providers`, `config`,
 `storage`, `tools`, `cloud`, `runner.py`, `workspace.py` and `agent.py` never
-import `textual`. If it fails, move the offending code into `wai.tui` rather
+import `textual`. If it fails, move the offending code into `altus.tui` rather
 than deleting the test --- the workflow engine drives all of that headlessly.
 
 ### Debugging the TUI
@@ -548,7 +548,7 @@ than deleting the test --- the workflow engine drives all of that headlessly.
 
 ```bash
 uv run textual console                          # terminal 1: log sink
-uv run textual run --dev wai.tui.app:WaiApp     # terminal 2: the app, with live CSS reload
+uv run textual run --dev altus.tui.app:WaiApp     # terminal 2: the app, with live CSS reload
 ```
 
 `self.log(...)` inside a widget then shows up in the console.
@@ -556,10 +556,10 @@ uv run textual run --dev wai.tui.app:WaiApp     # terminal 2: the app, with live
 ### Building a distributable
 
 ```bash
-uv build                          # -> dist/wai-<version>-py3-none-any.whl and .tar.gz
+uv build                          # -> dist/altus-<version>-py3-none-any.whl and .tar.gz
 uv tool install --force dist/*.whl
-wai --version
-uv tool uninstall wai
+altus --version
+uv tool uninstall altus
 ```
 
 That produces a wheel anyone can install with `uv tool install` or `pipx`.
@@ -579,13 +579,13 @@ install sees --- and check the graceful-degradation path --- skip it:
 
 ```bash
 uv sync --extra k8s --no-dev      # kubernetes only; GCP and Azure absent
-uv run --no-dev wai tools list    # missing integrations show their install hint
+uv run --no-dev altus tools list    # missing integrations show their install hint
 ```
 
 ### Layout
 
 ```
-src/wai/       the package (see Architecture above)
+src/altus/       the package (see Architecture above)
 tests/         mirrors it; tests/__snapshots__ holds the TUI SVGs
 .github/       CI only
 ```

@@ -1,9 +1,9 @@
 """The Phase 2 guard.
 
-``wai.core``, ``wai.providers``, ``wai.config`` and ``wai.storage`` must stay
+``altus.core``, ``altus.providers``, ``altus.config`` and ``altus.storage`` must stay
 importable without Textual, because the Phase 2 workflow engine drives them
 headlessly. If this test fails, do not delete it — move the offending code
-into ``wai.tui`` instead.
+into ``altus.tui`` instead.
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-import wai
+import altus
 
 HEADLESS_PACKAGES = ("core", "providers", "config", "storage", "tools", "cloud", "render")
-SRC = Path(wai.__file__).parent
+SRC = Path(altus.__file__).parent
 
 
 def _modules(package: str) -> list[Path]:
@@ -48,7 +48,7 @@ def test_headless_packages_do_not_import_tui(package: str) -> None:
     for path in _modules(package):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("wai.tui"):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("altus.tui"):
                 pytest.fail(f"{path.relative_to(SRC)} imports {node.module}")
 
 

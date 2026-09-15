@@ -19,7 +19,7 @@ import io
 import pytest
 from PIL import Image
 
-from wai.core.visuals import (
+from altus.core.visuals import (
     Bar,
     Bars,
     Gauge,
@@ -30,7 +30,7 @@ from wai.core.visuals import (
     Table,
     VisualGroup,
 )
-from wai.render import DARK, LIGHT, Hit, View, render, renderable
+from altus.render import DARK, LIGHT, Hit, View, render, renderable
 
 
 def node(kind: str, name: str, status: str = "", namespace: str = "shop") -> GraphNode:
@@ -183,7 +183,7 @@ def test_hit_node_ids_are_what_a_drill_down_needs(graph: ResourceGraph) -> None:
     front end can build a k8s_get from a click without parsing pixels."""
     out = render(graph, size=(820, 420))
     assert out is not None
-    from wai.cloud.k8s import split_node_id
+    from altus.cloud.k8s import split_node_id
 
     for hit in out.hits:
         assert split_node_id(hit.node_id) is not None, hit.node_id
@@ -353,7 +353,7 @@ def test_hit_regions_line_up_with_the_hit_helper(graph: ResourceGraph) -> None:
 
 
 def test_the_cell_map_draws_every_node(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     grid = draw_graph(graph, width=120, height=30, palette=DARK)
     assert len(grid.hits) == len(graph.nodes)
@@ -363,7 +363,7 @@ def test_the_cell_map_draws_every_node(graph: ResourceGraph) -> None:
 
 
 def test_cell_hits_are_in_columns_and_rows_not_pixels(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     grid = draw_graph(graph, width=120, height=30, palette=DARK)
     for hit in grid.hits:
@@ -374,7 +374,7 @@ def test_cell_hits_are_in_columns_and_rows_not_pixels(graph: ResourceGraph) -> N
 
 
 def test_a_cell_click_resolves_to_the_node_under_it(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     grid = draw_graph(graph, width=120, height=30, palette=DARK)
     for hit in grid.hits:
@@ -384,7 +384,7 @@ def test_a_cell_click_resolves_to_the_node_under_it(graph: ResourceGraph) -> Non
 
 
 def test_cell_hit_regions_do_not_overlap(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     grid = draw_graph(graph, width=120, height=30, palette=DARK)
     boxes = [hit.box for hit in grid.hits]
@@ -399,7 +399,7 @@ def test_cross_relations_are_listed_because_cells_cannot_draw_arcs(
     """The image back end arcs them over the tree. A character grid has nowhere
     to route a curve, so they are named instead --- losing them entirely would
     reduce the graph to a tree."""
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     text = draw_graph(graph, width=120, height=30, palette=DARK).to_text()
     assert "relationships" in text
@@ -407,7 +407,7 @@ def test_cross_relations_are_listed_because_cells_cannot_draw_arcs(
 
 
 def test_the_cell_map_is_deterministic(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     first = draw_graph(graph, width=120, height=30, palette=DARK)
     second = draw_graph(graph, width=120, height=30, palette=DARK)
@@ -416,7 +416,7 @@ def test_the_cell_map_is_deterministic(graph: ResourceGraph) -> None:
 
 
 def test_a_narrow_terminal_does_not_crash(graph: ResourceGraph) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     for width in (20, 40, 60):
         grid = draw_graph(graph, width=width, height=24, palette=DARK)
@@ -425,7 +425,7 @@ def test_a_narrow_terminal_does_not_crash(graph: ResourceGraph) -> None:
 
 
 def test_an_empty_graph_says_so_rather_than_drawing_nothing() -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     grid = draw_graph(
         ResourceGraph(title="empty", nodes=[], edges=[]), width=60, height=10, palette=DARK
@@ -437,7 +437,7 @@ def test_an_empty_graph_says_so_rather_than_drawing_nothing() -> None:
 def test_status_is_kept_and_the_name_gives_way_to_it() -> None:
     """The same collision the image back end had: both share a line, so the
     status takes its width out of the name's budget first."""
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     long_name = node("Pod", "a-very-long-pod-name-indeed", "CrashLoopBackOff")
     grid = draw_graph(ResourceGraph(nodes=[long_name], edges=[]), width=60, height=12, palette=DARK)
@@ -454,7 +454,7 @@ def test_both_back_ends_are_the_same_engine(graph: ResourceGraph) -> None:
     structure the shared engine computes: a parent sits above its children, and
     siblings run left to right in the same order.
     """
-    from wai.render.cells import draw_graph as draw_cells
+    from altus.render.cells import draw_graph as draw_cells
 
     image = render(graph, size=(900, 460))
     cells = draw_cells(graph, width=120, height=30, palette=DARK)
@@ -482,9 +482,9 @@ def test_the_layout_engine_is_shared_not_copied() -> None:
     import ast
     from pathlib import Path
 
-    import wai.render
+    import altus.render
 
-    root = Path(wai.render.__file__).parent
+    root = Path(altus.render.__file__).parent
     for name in ("graph.py", "cells.py"):
         tree = ast.parse((root / name).read_text(encoding="utf-8"))
         imported = {
@@ -492,7 +492,7 @@ def test_the_layout_engine_is_shared_not_copied() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and node.module
         }
-        assert "wai.render.layout" in imported, f"{name} should use the shared layout"
+        assert "altus.render.layout" in imported, f"{name} should use the shared layout"
         source = (root / name).read_text(encoding="utf-8")
         assert "def forest(" not in source, f"{name} reimplements forest()"
 
@@ -521,7 +521,7 @@ def test_the_layout_engine_is_shared_not_copied() -> None:
     ],
 )
 def test_terminals_are_recognised_or_assumed_modest(env: dict[str, str], expected: str) -> None:
-    from wai.render.capability import detect
+    from altus.render.capability import detect
 
     assert detect(env).value == expected
 
@@ -530,7 +530,7 @@ def test_warp_is_denied_despite_claiming_support() -> None:
     """Warp answers the graphics query affirmatively but does not implement the
     unicode placeholders textual-image uses. Believing it produces a broken
     screen, so it is denied by name rather than trusted."""
-    from wai.render.capability import detect
+    from altus.render.capability import detect
 
     assert detect({"TERM": "xterm-256color", "TERM_PROGRAM": "WarpTerminal"}).value == "cells"
 
@@ -539,7 +539,7 @@ def test_warp_is_denied_despite_claiming_support() -> None:
 def test_multiplexers_do_not_get_images(wrapper: dict[str, str]) -> None:
     """Images inside tmux need passthrough that is off by default and mangles
     output when missing. Not worth the gamble."""
-    from wai.render.capability import detect
+    from altus.render.capability import detect
 
     env = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", **wrapper}
     assert detect(env).value == "cells"
@@ -547,7 +547,7 @@ def test_multiplexers_do_not_get_images(wrapper: dict[str, str]) -> None:
 
 def test_an_unknown_terminal_gets_cells_not_images() -> None:
     """Guessing low costs a nicer picture. Guessing high sprays escape codes."""
-    from wai.render.capability import detect
+    from altus.render.capability import detect
 
     assert detect({"TERM": "something-nobody-has-heard-of"}).value == "cells"
 
@@ -560,7 +560,7 @@ def test_an_unknown_terminal_gets_cells_not_images() -> None:
     [("off", "text"), ("text", "text"), ("cells", "cells"), ("image", "image"), ("auto", "image")],
 )
 def test_the_setting_is_applied_on_top_of_detection(setting: str, expected: str) -> None:
-    from wai.render.capability import resolve
+    from altus.render.capability import resolve
 
     assert resolve(setting, {"TERM": "xterm-kitty"}).value == expected
 
@@ -568,7 +568,7 @@ def test_the_setting_is_applied_on_top_of_detection(setting: str, expected: str)
 def test_asking_for_images_on_a_terminal_that_cannot_show_them_yields_cells() -> None:
     """The explicit values are a ceiling, not a floor. The alternative to
     refusing is a screen full of escape codes."""
-    from wai.render.capability import resolve
+    from altus.render.capability import resolve
 
     env = {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}
     assert resolve("image", env).value == "cells"
@@ -576,20 +576,20 @@ def test_asking_for_images_on_a_terminal_that_cannot_show_them_yields_cells() ->
 
 
 def test_an_unknown_setting_falls_back_to_auto() -> None:
-    from wai.render.capability import available, resolve
+    from altus.render.capability import available, resolve
 
     env = {"TERM": "xterm-kitty"}
     assert resolve("nonsense", env) == available(env)
 
 
 def test_off_beats_a_capable_terminal() -> None:
-    from wai.render.capability import resolve
+    from altus.render.capability import resolve
 
     assert resolve("off", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}).value == "text"
 
 
 def test_support_levels_are_ordered() -> None:
-    from wai.render.capability import Support
+    from altus.render.capability import Support
 
     assert Support.IMAGE.at_least(Support.CELLS)
     assert Support.CELLS.at_least(Support.TEXT)
@@ -601,7 +601,7 @@ def test_support_levels_are_ordered() -> None:
 
 def test_every_reason_for_no_pictures_is_explainable() -> None:
     """ "Why are there no pictures" should be answerable inside the app."""
-    from wai.render.capability import explain
+    from altus.render.capability import explain
 
     cases = {
         "off": {"TERM": "xterm-kitty"},
@@ -615,14 +615,14 @@ def test_every_reason_for_no_pictures_is_explainable() -> None:
 
 
 def test_the_explanation_names_the_terminals_that_would_work() -> None:
-    from wai.render.capability import explain
+    from altus.render.capability import explain
 
     message = explain("auto", {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"})
     assert "Kitty" in message and "Ghostty" in message
 
 
 def test_tmux_gets_its_own_explanation_rather_than_the_generic_one() -> None:
-    from wai.render.capability import explain
+    from altus.render.capability import explain
 
     message = explain("auto", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", "TMUX": "/tmp/x"})
     assert "tmux" in message
@@ -652,7 +652,7 @@ def test_timestamps_are_additive_and_optional() -> None:
     """Existing callers pass no `at` and must keep working exactly as before."""
     from pydantic import TypeAdapter
 
-    from wai.core.visuals import Visual
+    from altus.core.visuals import Visual
 
     plain = Series(title="restarts", points=[0, 1, 3])
     assert plain.at == []
@@ -661,7 +661,7 @@ def test_timestamps_are_additive_and_optional() -> None:
 
 
 def test_a_chart_draws_several_lines() -> None:
-    from wai.core.visuals import Chart
+    from altus.core.visuals import Chart
 
     model = Chart(title="CPU", series=[_timed("web", [1, 2, 3]), _timed("api", [3, 2, 1])])
     out = render(model, size=(620, 240))
@@ -670,7 +670,7 @@ def test_a_chart_draws_several_lines() -> None:
 
 
 def test_a_chart_with_nothing_in_it_still_draws() -> None:
-    from wai.core.visuals import Chart
+    from altus.core.visuals import Chart
 
     assert render(Chart(title="CPU", series=[]), size=(320, 160)) is not None
 
@@ -678,14 +678,14 @@ def test_a_chart_with_nothing_in_it_still_draws() -> None:
 def test_lines_of_different_lengths_share_one_scale() -> None:
     """Shared axes are the point of a chart. Per-line scales would invite
     exactly the wrong comparison."""
-    from wai.core.visuals import Chart
+    from altus.core.visuals import Chart
 
     model = Chart(series=[_timed("a", [1, 2]), _timed("b", [100, 200, 300])])
     assert render(model, size=(620, 240)) is not None
 
 
 def test_a_chart_mixing_timed_and_untimed_lines_draws() -> None:
-    from wai.core.visuals import Chart
+    from altus.core.visuals import Chart
 
     model = Chart(series=[_timed("a", [1, 2, 3]), Series(label="b", points=[3, 2, 1])])
     assert render(model, size=(620, 240)) is not None
@@ -695,7 +695,7 @@ def test_a_chart_mixing_timed_and_untimed_lines_draws() -> None:
 def test_the_chart_variant_joined_the_union_without_breaking_it() -> None:
     from pydantic import TypeAdapter
 
-    from wai.core.visuals import Bars, Chart, Gauge, Table, Visual
+    from altus.core.visuals import Bars, Chart, Gauge, Table, Visual
 
     adapter = TypeAdapter(Visual)
     for model in (Bars(), Gauge(), Table(), Series(), Chart()):
@@ -705,7 +705,7 @@ def test_the_chart_variant_joined_the_union_without_breaking_it() -> None:
 def test_a_chart_says_something_useful_in_text() -> None:
     """The terminal path has to keep working: this is what a pipe, CI and a
     dumb terminal get."""
-    from wai.core.visuals import Chart
+    from altus.core.visuals import Chart
 
     text = Chart(
         title="CPU", series=[_timed("web", [1, 2, 3]), _timed("api", [3, 2, 1])], caption="2m"
@@ -739,7 +739,7 @@ def test_a_capable_terminal_without_the_extra_falls_back_to_cells(
 ) -> None:
     """A missing optional dependency is a visible, fixable state --- not an
     import error at draw time."""
-    from wai.render.capability import available, detect
+    from altus.render.capability import available, detect
 
     _without_textual_image(monkeypatch)
     kitty = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}
@@ -748,7 +748,7 @@ def test_a_capable_terminal_without_the_extra_falls_back_to_cells(
 
 
 def test_the_explanation_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
-    from wai.render.capability import explain
+    from altus.render.capability import explain
 
     _without_textual_image(monkeypatch)
     message = explain("auto", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"})
@@ -757,7 +757,7 @@ def test_the_explanation_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch
 
 
 def test_drawing_never_needed_textual_image_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
-    """wai.render draws with Pillow. textual-image only puts the result on a
+    """altus.render draws with Pillow. textual-image only puts the result on a
     terminal, so rendering itself must not depend on it."""
     _without_textual_image(monkeypatch)
     assert render(BARS, size=(480, 200)) is not None
@@ -767,7 +767,7 @@ def test_drawing_never_needed_textual_image_at_all(monkeypatch: pytest.MonkeyPat
 def test_the_cell_map_never_needed_it_either(
     monkeypatch: pytest.MonkeyPatch, graph: ResourceGraph
 ) -> None:
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     _without_textual_image(monkeypatch)
     grid = draw_graph(graph, width=100, height=24, palette=DARK)
@@ -779,7 +779,7 @@ def test_the_relation_list_never_overwrites_the_map(graph: ResourceGraph) -> Non
     Kubernetes ones: the list was placed below the space *reserved* for the
     map rather than below what was actually drawn, so a map that filled its
     allowance had its bottom border written over."""
-    from wai.render.cells import draw_graph
+    from altus.render.cells import draw_graph
 
     for height in range(14, 30):
         grid = draw_graph(graph, width=110, height=height, palette=DARK)
@@ -795,7 +795,7 @@ def test_the_relation_list_never_overwrites_the_map(graph: ResourceGraph) -> Non
 def test_a_node_that_would_overflow_the_map_area_is_not_drawn(graph: ResourceGraph) -> None:
     """Tested against the node's bottom, not its top. Testing the top let the
     lower half of a node spill into the relationship list."""
-    from wai.render.cells import CELLS, draw_graph
+    from altus.render.cells import CELLS, draw_graph
 
     grid = draw_graph(graph, width=110, height=16, palette=DARK)
     for hit in grid.hits:

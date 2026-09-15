@@ -16,8 +16,8 @@ import itertools
 
 import pytest
 
-from wai.cloud import azure as az
-from wai.cloud.base import Sensitivity
+from altus.cloud import azure as az
+from altus.cloud.base import Sensitivity
 
 RESOURCE_SCOPE = (
     "/subscriptions/0000/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"
@@ -363,7 +363,7 @@ def test_operation_for(resource_id: str, verb: str, action: str, expected: str) 
 def test_target_for_feeds_the_protection_rules() -> None:
     """Protecting a subscription by id starts working with no new config ---
     ProtectedSettings.accounts already holds opaque ids."""
-    from wai.cloud.base import ProtectionRules
+    from altus.cloud.base import ProtectionRules
 
     rules = ProtectionRules.build([], ["0000"], "confirm")
     assert rules.matches(az.target_for("0000", "westeurope", "rg"))
@@ -374,11 +374,11 @@ def test_target_for_feeds_the_protection_rules() -> None:
 
 from typing import Any, ClassVar  # noqa: E402
 
-from wai.config.models import AzureSettings, CloudSettings  # noqa: E402
-from wai.tools import default_registry  # noqa: E402
-from wai.tools.azure import azure_tools  # noqa: E402
-from wai.tools.base import CloudContext, ToolContext  # noqa: E402
-from wai.workspace import Workspace  # noqa: E402
+from altus.config.models import AzureSettings, CloudSettings  # noqa: E402
+from altus.tools import default_registry  # noqa: E402
+from altus.tools.azure import azure_tools  # noqa: E402
+from altus.tools.base import CloudContext, ToolContext  # noqa: E402
+from altus.workspace import Workspace  # noqa: E402
 
 IDENTITY = {
     "tenant": "t-0000",
@@ -487,7 +487,7 @@ def context(
     protection: Any = None,
     approvals: Any = None,
 ) -> ToolContext:
-    from wai.tools.approval import AllowAll
+    from altus.tools.approval import AllowAll
 
     return ToolContext(
         workspace=Workspace([tmp_path]),
@@ -515,7 +515,7 @@ async def test_whoami_names_the_subscription(tmp_path: Any) -> None:
 
 
 async def test_whoami_warns_when_the_subscription_is_protected(tmp_path: Any) -> None:
-    from wai.cloud.base import ProtectionRules
+    from altus.cloud.base import ProtectionRules
 
     rules = ProtectionRules.build([], ["sub-0000"], "confirm")
     outcome = await tool("azure_whoami").run({}, context(tmp_path, FakeAzure(), protection=rules))
@@ -597,7 +597,7 @@ async def test_get_rejects_something_that_is_not_a_resource_id(tmp_path: Any) ->
 async def test_get_redacts_before_the_model_sees_it(tmp_path: Any) -> None:
     """Tool results are transmitted to the LLM provider, so redaction is the
     control that matters, not an extra."""
-    from wai.cloud.redact import MARKER
+    from altus.cloud.redact import MARKER
 
     provider = FakeAzure({RESOURCE_SCOPE: {"properties": {"adminPassword": "hunter2"}}})
     outcome = await tool("azure_get").run({"id": RESOURCE_SCOPE}, context(tmp_path, provider))
@@ -922,7 +922,7 @@ def test_the_drill_down_knows_how_to_read_an_azure_node() -> None:
     """detail.py dispatches on the node's own reader. A node whose kind is not
     mapped still opens --- it falls back to a generic resource read rather than
     to a tool for another cloud."""
-    from wai.tui.screens.detail import AZURE_READERS, READERS, NodeDetail
+    from altus.tui.screens.detail import AZURE_READERS, READERS, NodeDetail
 
     assert READERS["azure_get"] == "Azure"
     screen = NodeDetail("VirtualMachine/rg/web1", "web1", reader="azure_get")
@@ -942,8 +942,8 @@ async def test_a_map_that_does_not_fit_says_so(tmp_path: Any) -> None:
     box is dropped while the caption goes on counting it. A map that quietly
     leaves nodes out claims a completeness it does not have.
     """
-    from wai.render.cells import draw_graph
-    from wai.render.palette import DARK
+    from altus.render.cells import draw_graph
+    from altus.render.palette import DARK
 
     provider = FakeAzure({"graph": {"data": TOPOLOGY_ROWS}})
     outcome = await tool("azure_topology").run({}, context(tmp_path, provider))
@@ -1011,13 +1011,13 @@ class WritableAzure(FakeAzure):
 
 
 def deny() -> Any:
-    from wai.tools.approval import Decision, RecordingPolicy
+    from altus.tools.approval import Decision, RecordingPolicy
 
     return RecordingPolicy(decision=Decision.DENY)
 
 
 def allow() -> Any:
-    from wai.tools.approval import Decision, RecordingPolicy
+    from altus.tools.approval import Decision, RecordingPolicy
 
     return RecordingPolicy(decision=Decision.ALLOW)
 
@@ -1176,7 +1176,7 @@ async def test_a_delete_of_something_stateful_demands_the_name_typed(tmp_path: A
 
 
 async def test_a_protected_subscription_escalates_an_ordinary_change(tmp_path: Any) -> None:
-    from wai.cloud.base import ProtectionRules
+    from altus.cloud.base import ProtectionRules
 
     provider = WritableAzure()
     policy = allow()
@@ -1190,7 +1190,7 @@ async def test_a_protected_subscription_escalates_an_ordinary_change(tmp_path: A
 
 
 async def test_protected_deny_refuses_outright(tmp_path: Any) -> None:
-    from wai.cloud.base import ProtectionRules
+    from altus.cloud.base import ProtectionRules
 
     provider = WritableAzure()
     policy = allow()

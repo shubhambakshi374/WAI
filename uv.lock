@@ -99,6 +99,100 @@ wheels = [
 ]
 
 [[package]]
+name = "altus"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "boto3" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "keyring" },
+    { name = "mistralai" },
+    { name = "openai" },
+    { name = "pathspec" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "textual" },
+    { name = "tomli-w" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "azure-identity" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "kubernetes" },
+    { name = "textual-image", extra = ["textual"] },
+]
+azure = [
+    { name = "azure-identity" },
+]
+gcp = [
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+]
+graphics = [
+    { name = "textual-image", extra = ["textual"] },
+]
+k8s = [
+    { name = "kubernetes" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "altus", extra = ["all"] },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-textual-snapshot" },
+    { name = "pytest-timeout" },
+    { name = "ruff" },
+    { name = "textual-dev" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=1.5.0" },
+    { name = "azure-identity", marker = "extra == 'all'", specifier = ">=1.20" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.20" },
+    { name = "boto3", specifier = ">=1.43.0" },
+    { name = "google-api-python-client", marker = "extra == 'all'", specifier = ">=2.150" },
+    { name = "google-api-python-client", marker = "extra == 'gcp'", specifier = ">=2.150" },
+    { name = "google-auth", marker = "extra == 'all'", specifier = ">=2.35" },
+    { name = "google-auth", marker = "extra == 'gcp'", specifier = ">=2.35" },
+    { name = "google-genai", specifier = ">=2.23.0" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "keyring", specifier = ">=25.7" },
+    { name = "kubernetes", marker = "extra == 'all'", specifier = ">=32.0" },
+    { name = "kubernetes", marker = "extra == 'k8s'", specifier = ">=32.0" },
+    { name = "mistralai", specifier = ">=2.10.0" },
+    { name = "openai", specifier = ">=3.13.0" },
+    { name = "pathspec", specifier = ">=1.0" },
+    { name = "platformdirs", specifier = ">=4.3" },
+    { name = "pydantic", specifier = ">=2.13" },
+    { name = "textual", specifier = ">=8.2.8" },
+    { name = "textual-image", extras = ["textual"], marker = "extra == 'all'", specifier = ">=0.14" },
+    { name = "textual-image", extras = ["textual"], marker = "extra == 'graphics'", specifier = ">=0.14" },
+    { name = "tomli-w", specifier = ">=1.2" },
+    { name = "typer", specifier = ">=0.15" },
+]
+provides-extras = ["k8s", "graphics", "azure", "gcp", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "altus", extras = ["all"] },
+    { name = "mypy", specifier = ">=1.14" },
+    { name = "pytest", specifier = ">=8.4,<9" },
+    { name = "pytest-asyncio", specifier = ">=1.0" },
+    { name = "pytest-textual-snapshot", specifier = ">=1.1" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
+    { name = "ruff", specifier = ">=0.9" },
+    { name = "textual-dev", specifier = ">=1.8" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2036,100 +2130,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
-]
-
-[[package]]
-name = "wai"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "boto3" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "keyring" },
-    { name = "mistralai" },
-    { name = "openai" },
-    { name = "pathspec" },
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "textual" },
-    { name = "tomli-w" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "azure-identity" },
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-    { name = "kubernetes" },
-    { name = "textual-image", extra = ["textual"] },
-]
-azure = [
-    { name = "azure-identity" },
-]
-gcp = [
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-]
-graphics = [
-    { name = "textual-image", extra = ["textual"] },
-]
-k8s = [
-    { name = "kubernetes" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-textual-snapshot" },
-    { name = "pytest-timeout" },
-    { name = "ruff" },
-    { name = "textual-dev" },
-    { name = "wai", extra = ["all"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=1.5.0" },
-    { name = "azure-identity", marker = "extra == 'all'", specifier = ">=1.20" },
-    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.20" },
-    { name = "boto3", specifier = ">=1.43.0" },
-    { name = "google-api-python-client", marker = "extra == 'all'", specifier = ">=2.150" },
-    { name = "google-api-python-client", marker = "extra == 'gcp'", specifier = ">=2.150" },
-    { name = "google-auth", marker = "extra == 'all'", specifier = ">=2.35" },
-    { name = "google-auth", marker = "extra == 'gcp'", specifier = ">=2.35" },
-    { name = "google-genai", specifier = ">=2.23.0" },
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "keyring", specifier = ">=25.7" },
-    { name = "kubernetes", marker = "extra == 'all'", specifier = ">=32.0" },
-    { name = "kubernetes", marker = "extra == 'k8s'", specifier = ">=32.0" },
-    { name = "mistralai", specifier = ">=2.10.0" },
-    { name = "openai", specifier = ">=3.13.0" },
-    { name = "pathspec", specifier = ">=1.0" },
-    { name = "platformdirs", specifier = ">=4.3" },
-    { name = "pydantic", specifier = ">=2.13" },
-    { name = "textual", specifier = ">=8.2.8" },
-    { name = "textual-image", extras = ["textual"], marker = "extra == 'all'", specifier = ">=0.14" },
-    { name = "textual-image", extras = ["textual"], marker = "extra == 'graphics'", specifier = ">=0.14" },
-    { name = "tomli-w", specifier = ">=1.2" },
-    { name = "typer", specifier = ">=0.15" },
-]
-provides-extras = ["k8s", "graphics", "azure", "gcp", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.14" },
-    { name = "pytest", specifier = ">=8.4,<9" },
-    { name = "pytest-asyncio", specifier = ">=1.0" },
-    { name = "pytest-textual-snapshot", specifier = ">=1.1" },
-    { name = "pytest-timeout", specifier = ">=2.3" },
-    { name = "ruff", specifier = ">=0.9" },
-    { name = "textual-dev", specifier = ">=1.8" },
-    { name = "wai", extras = ["all"] },
 ]
 
 [[package]]
