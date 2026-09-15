@@ -45,6 +45,30 @@ AWS_PANELS: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("regions", "aws_regions", {}),
 )
 
+AZURE_PANELS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    ("network", "azure_topology", {}),
+    ("inventory", "azure_inventory", {}),
+    # Cost Management is free, unlike Cost Explorer, so unlike the AWS
+    # dashboard this one can afford to show spend on a screen that refreshes.
+    ("spend", "azure_cost", {}),
+    ("identity", "azure_whoami", {}),
+)
+
+#: What the scope box means for each cloud. Only Kubernetes actually uses it;
+#: for the others it is shown so the heading is not the only thing naming where
+#: the panels are looking.
+SCOPE_NAMES: dict[str, str] = {
+    "k8s": "namespace",
+    "aws": "region",
+    "azure": "subscription",
+}
+
+PANELS_BY_CLOUD: dict[str, tuple[tuple[str, str, dict[str, Any]], ...]] = {
+    "k8s": K8S_PANELS,
+    "aws": AWS_PANELS,
+    "azure": AZURE_PANELS,
+}
+
 #: Kept for callers that predate the AWS panels.
 PANELS = K8S_PANELS
 
@@ -109,7 +133,7 @@ class DashboardScreen(Screen[None]):
         self.namespace = namespace
         self.setting = setting
         self.cloud = cloud
-        self.panels = AWS_PANELS if cloud == "aws" else K8S_PANELS
+        self.panels = PANELS_BY_CLOUD.get(cloud, K8S_PANELS)
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -117,7 +141,7 @@ class DashboardScreen(Screen[None]):
                 yield Label(self._heading(), classes="title", id="heading", markup=False)
                 yield Input(
                     value=self.namespace,
-                    placeholder="namespace" if self.cloud == "k8s" else "region",
+                    placeholder=SCOPE_NAMES.get(self.cloud, "namespace"),
                     id="namespace",
                 )
                 yield Label(
@@ -134,6 +158,9 @@ class DashboardScreen(Screen[None]):
         if self.cloud == "aws":
             where = getattr(context, "default_region", None) or "default region"
             return f"AWS · {where}"
+        if self.cloud == "azure":
+            where = getattr(context, "azure_subscription", None) or "no subscription selected"
+            return f"Azure · {where}"
         where = getattr(context, "kube_context", None) or "current context"
         return f"{where} · namespace {self.namespace}"
 
@@ -167,7 +194,10 @@ class DashboardScreen(Screen[None]):
                 return None
             # Every panel is a read, so a failure is worth showing rather than
             # raising: one tool being denied should not blank the rest.
-            scope = {} if self.cloud == "aws" else {"namespace": self.namespace}
+            # Only Kubernetes takes a scope per panel. AWS reads its region
+            # and Azure its subscription from the session, so passing one here
+            # would send an argument the tool does not declare.
+            scope = {"namespace": self.namespace} if self.cloud == "k8s" else {}
             return await registry.execute(name, {**args, **scope}, context)
 
         outcomes = await asyncio.gather(

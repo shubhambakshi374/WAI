@@ -136,3 +136,26 @@ def test_the_test_harness_cannot_reach_the_real_keyring() -> None:
 
     # The stand-in is a plain dict, so nothing here touched the OS keychain.
     assert keyring.get_password.__qualname__ != "get_password"
+
+
+def test_the_pre_rename_context_scope_still_loads() -> None:
+    """This value lives in people's config files and the rename changed it.
+
+    Without the alias, an existing config.toml stops loading altogether --- a
+    validation error on a key nobody touched, at startup, with no obvious cause.
+    """
+    from altus.config.models import CloudSettings
+
+    assert CloudSettings(kube_context_scope="wai").kube_context_scope == "altus"
+    assert CloudSettings(kube_context_scope="global").kube_context_scope == "global"
+
+
+def test_the_pre_rename_env_var_still_resolves_a_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """ALTUS_ is the name now, but WAI_ is in people's shell profiles and a
+    rename is not a reason to break those."""
+    from altus.config.secrets import get_api_key
+
+    monkeypatch.setenv("WAI_ANTHROPIC_API_KEY", "from-the-old-name")
+    assert get_api_key("anthropic") == "from-the-old-name"
+    monkeypatch.setenv("ALTUS_ANTHROPIC_API_KEY", "from-the-new-one")
+    assert get_api_key("anthropic") == "from-the-new-one"

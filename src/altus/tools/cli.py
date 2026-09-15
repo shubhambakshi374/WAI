@@ -73,6 +73,11 @@ RESERVED_FLAGS = (
     "--region",
     "--endpoint-url",
     "--ca-bundle",
+    # Azure: the same argument. One credential commonly sees many
+    # subscriptions, and Altus acts in exactly one --- so a command that picks
+    # its own would be approved against a target it is not going to touch.
+    "--subscription",
+    "--tenant",
 )
 
 
@@ -108,6 +113,8 @@ class CliTool(BaseTool):
             # `terminate-instances` depending on which door it came through is
             # exactly the kind of gap a gate is supposed not to have.
             return _classify_aws(positional)
+        if self.binary == "az":
+            return _classify_azure(positional)
         if any(a == "--raw" for a in args):
             # kubectl --raw reaches any API path with any verb, unclassified.
             return Sensitivity.PRIVILEGED
@@ -153,6 +160,10 @@ class CliTool(BaseTool):
             region = getattr(ctx.cloud, "aws_region", "") or ""
             if region:
                 full = [*argv, "--region", region]
+        elif self.binary == "az":
+            subscription = getattr(ctx.cloud, "azure_subscription", "") or ""
+            if subscription:
+                full = [*argv, "--subscription", subscription]
 
         sensitivity = self.classify(argv)
         if sensitivity.needs_approval:
@@ -229,6 +240,128 @@ def _classify_aws(positional: list[str]) -> Sensitivity:
     return classify(service, operation)
 
 
+#: `az <group...> <verb>` mapped onto the ARM types the SDK path talks about,
+#: so one command cannot get two different answers depending on which door it
+#: came through. Only the groups people actually reach for: anything absent
+#: fails closed rather than being guessed at.
+AZURE_TYPES: dict[str, str] = {
+    "account": "Microsoft.Resources/subscriptions",
+    "group": "Microsoft.Resources/subscriptions/resourceGroups",
+    "resource": "Microsoft.Resources/resources",
+    "deployment": "Microsoft.Resources/deployments",
+    "tag": "Microsoft.Resources/tags",
+    "vm": "Microsoft.Compute/virtualMachines",
+    "vmss": "Microsoft.Compute/virtualMachineScaleSets",
+    "disk": "Microsoft.Compute/disks",
+    "snapshot": "Microsoft.Compute/snapshots",
+    "image": "Microsoft.Compute/images",
+    "storage account": "Microsoft.Storage/storageAccounts",
+    "storage account keys": "Microsoft.Storage/storageAccounts",
+    "storage container": "Microsoft.Storage/storageAccounts/blobServices/containers",
+    "keyvault": "Microsoft.KeyVault/vaults",
+    "keyvault secret": "Microsoft.KeyVault/vaults/secrets",
+    "keyvault key": "Microsoft.KeyVault/vaults/keys",
+    "keyvault certificate": "Microsoft.KeyVault/vaults/certificates",
+    "role assignment": "Microsoft.Authorization/roleAssignments",
+    "role definition": "Microsoft.Authorization/roleDefinitions",
+    "lock": "Microsoft.Authorization/locks",
+    "policy assignment": "Microsoft.Authorization/policyAssignments",
+    "identity": "Microsoft.ManagedIdentity/userAssignedIdentities",
+    "network vnet": "Microsoft.Network/virtualNetworks",
+    "network vnet subnet": "Microsoft.Network/virtualNetworks/subnets",
+    "network nsg": "Microsoft.Network/networkSecurityGroups",
+    "network nsg rule": "Microsoft.Network/networkSecurityGroups/securityRules",
+    "network nic": "Microsoft.Network/networkInterfaces",
+    "network public-ip": "Microsoft.Network/publicIPAddresses",
+    "network lb": "Microsoft.Network/loadBalancers",
+    "network firewall": "Microsoft.Network/azureFirewalls",
+    "aks": "Microsoft.ContainerService/managedClusters",
+    "acr": "Microsoft.ContainerRegistry/registries",
+    "webapp": "Microsoft.Web/sites",
+    "functionapp": "Microsoft.Web/sites",
+    "appservice plan": "Microsoft.Web/serverfarms",
+    "sql server": "Microsoft.Sql/servers",
+    "sql db": "Microsoft.Sql/servers/databases",
+    "cosmosdb": "Microsoft.DocumentDB/databaseAccounts",
+    "redis": "Microsoft.Cache/redis",
+    "eventhubs namespace": "Microsoft.EventHub/namespaces",
+    "monitor diagnostic-settings": "Microsoft.Insights/diagnosticSettings",
+}
+
+#: Commands whose ARM operation is nothing like their name. Every one of these
+#: reads like an innocent `show` or `list` and hands back a live credential.
+AZURE_OPERATIONS: dict[tuple[str, str], str] = {
+    ("storage account keys", "list"): "Microsoft.Storage/storageAccounts/listKeys/action",
+    ("storage account keys", "renew"): "Microsoft.Storage/storageAccounts/regenerateKey/action",
+    (
+        "storage account",
+        "show-connection-string",
+    ): "Microsoft.Storage/storageAccounts/listKeys/action",
+    ("aks", "get-credentials"): (
+        "Microsoft.ContainerService/managedClusters/listClusterUserCredential/action"
+    ),
+    ("acr", "login"): "Microsoft.ContainerRegistry/registries/listCredentials/action",
+    ("acr credential", "show"): "Microsoft.ContainerRegistry/registries/listCredentials/action",
+    ("webapp deployment list-publishing-profiles", "show"): "Microsoft.Web/sites/publishxml/action",
+}
+
+#: The az verbs that map onto an ARM verb. Anything else is taken as an action
+#: named by the verb itself.
+AZURE_VERBS: dict[str, str] = {
+    "list": "read",
+    "show": "read",
+    "get": "read",
+    "exists": "read",
+    "wait": "read",
+    "create": "write",
+    "update": "write",
+    "set": "write",
+    "add": "write",
+    "import": "write",
+    "delete": "delete",
+    "remove": "delete",
+    "purge": "delete",
+}
+
+
+def _classify_azure(positional: list[str]) -> Sensitivity:
+    """`az <group...> <verb>` through the SDK's own classifier.
+
+    An unmapped group is PRIVILEGED. That is what catches `az login`,
+    `az ad ...`, and every command a future CLI release adds --- the cases
+    where guessing low is unrecoverable, and the reason the table is a short
+    allowlist rather than an attempt at completeness.
+
+    An unmapped *verb* under a mapped group is deliberately **not** privileged,
+    which is a considered departure from the original plan. Treating it that
+    way would demand a typed confirmation for `az vm start`, and the AWS work
+    measured exactly where that leads: when every Delete* came out privileged,
+    2,281 of them including DeleteTag, the challenge stopped meaning anything.
+    So an unknown verb becomes an ARM action and `classify` judges it --- which
+    already returns PRIVILEGED for key material and SENSITIVE_READ for the
+    credential-shaped ones, and MUTATE otherwise. MUTATE still prompts, with
+    the whole command shown.
+    """
+    from altus.cloud.azure import classify
+
+    if len(positional) < 2:
+        return Sensitivity.PRIVILEGED
+    verb = positional[-1]
+    group = " ".join(positional[:-1])
+
+    override = AZURE_OPERATIONS.get((group, verb))
+    if override:
+        return classify(override)
+
+    base = AZURE_TYPES.get(group)
+    if base is None:
+        return Sensitivity.PRIVILEGED
+
+    segment = AZURE_VERBS.get(verb)
+    operation = f"{base}/{segment}" if segment else f"{base}/{verb}/action"
+    return classify(operation)
+
+
 async def _execute(path: str, argv: list[str], *, timeout_seconds: float) -> tuple[int, str, str]:
     """create_subprocess_exec, never create_subprocess_shell.
 
@@ -299,5 +432,19 @@ class KustomizeTool(CliTool):
     )
 
 
+class AzureCliTool(CliTool):
+    name: ClassVar[str] = "azure_cli"
+    binary: ClassVar[str] = "az"
+    description: ClassVar[str] = (
+        "Run the Azure CLI when — and only when — the azure_* tools cannot "
+        "express what you need. They are better: azure_explain resolves the "
+        "api-version for you, azure_write shows the user a real What-If diff "
+        "before anything changes, output comes back structured and redacted, "
+        "and the prompt says what was checked. The CLI gives up all four. Say "
+        "in `reason` why it is necessary; the user sees it. --subscription is "
+        "supplied by Altus."
+    )
+
+
 def cli_tools() -> list[CliTool]:
-    return [KubectlTool(), HelmTool(), KustomizeTool(), AwsCliTool()]
+    return [KubectlTool(), HelmTool(), KustomizeTool(), AwsCliTool(), AzureCliTool()]

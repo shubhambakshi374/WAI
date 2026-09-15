@@ -135,7 +135,12 @@ def default_registry(
         from altus.tools.cli import cli_tools
 
         allowed = set(getattr(cloud, "cli_allowlist", ()) or ())
-        tools += [t for t in cli_tools() if not allowed or t.binary in allowed]
+        blocked = _cli_blocked(cloud)
+        tools += [
+            t
+            for t in cli_tools()
+            if (not allowed or t.binary in allowed) and t.binary not in blocked
+        ]
 
     if not writes:
         # `writes=False` has to mean *no writes*, not "no file writes". It
@@ -154,3 +159,15 @@ def _cli_enabled(cloud: Any) -> bool:
     if not getattr(cloud, "cli_fallback", False):
         return False
     return bool(getattr(getattr(cloud, "k8s", None), "allow_cli", True))
+
+
+def _cli_blocked(cloud: Any) -> set[str]:
+    """Binaries a per-cloud `allow_cli` switches off on its own.
+
+    Kubernetes gates the whole CLI layer because that switch predates the
+    others; Azure only gates `az`, so turning it off does not take kubectl
+    with it."""
+    blocked: set[str] = set()
+    if not getattr(getattr(cloud, "azure", None), "allow_cli", True):
+        blocked.add("az")
+    return blocked

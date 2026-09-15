@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProviderSettings(BaseModel):
@@ -169,6 +169,18 @@ class CloudSettings(BaseModel):
     """`altus` keeps the selection to this tool. `global` also writes
     current-context to your kubeconfig, like `kubectl config use-context` ---
     which retargets every other terminal you have open, so it is opt-in."""
+
+    @field_validator("kube_context_scope", mode="before")
+    @classmethod
+    def _accept_the_old_spelling(cls, value: object) -> object:
+        """This value lives in people's config files, and the rename changed it.
+
+        Without this, an existing config.toml saying `kube_context_scope =
+        "wai"` stops loading altogether --- a validation error on a key nobody
+        touched, at startup, with no obvious cause.
+        """
+        return "altus" if value == "wai" else value
+
     default_region: str | None = None
     azure_subscription: str | None = None
     """The Azure subscription Altus acts in. One credential commonly sees many,

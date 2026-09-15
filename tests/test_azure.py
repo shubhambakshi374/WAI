@@ -655,8 +655,15 @@ def test_the_registry_registers_azure_when_it_is_asked_to(tmp_path: Any) -> None
 
 
 def test_the_registry_leaves_azure_out_when_it_is_not(tmp_path: Any) -> None:
+    """The native tools go, the CLI fallback stays.
+
+    `az` is a binary on PATH, not the Python SDK, so it is gated by
+    cli_allowlist rather than by whether azure-identity is installed --- the
+    same way kubectl survives a registry built without the Kubernetes SDK.
+    """
     registry = default_registry(kubernetes=False, aws=False, azure=False, cloud=CloudSettings())
-    assert not any(name.startswith("azure_") for name in registry.names)
+    native = {name for name in registry.names if name.startswith("azure_")} - {"azure_cli"}
+    assert native == set()
 
 
 # ------------------------------------------------------------ curated views
@@ -1275,3 +1282,156 @@ def test_a_read_only_registry_carries_no_azure_change(tmp_path: Any) -> None:
     assert "azure_get" in registry
     for name in ("azure_write", "azure_delete", "azure_action"):
         assert name not in registry
+
+
+# ------------------------------------------------------- the az CLI fallback
+
+
+def az_tool() -> Any:
+    from altus.tools.cli import AzureCliTool
+
+    return AzureCliTool()
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["vm", "list"], Sensitivity.READ),
+        (["vm", "show"], Sensitivity.READ),
+        (["account", "list"], Sensitivity.READ),
+        (["network", "nsg", "list"], Sensitivity.READ),
+        # Reads shaped like reads that hand back a live credential.
+        (["storage", "account", "keys", "list"], Sensitivity.SENSITIVE_READ),
+        (["storage", "account", "show-connection-string"], Sensitivity.SENSITIVE_READ),
+        (["keyvault", "secret", "show"], Sensitivity.SENSITIVE_READ),
+        (["aks", "get-credentials"], Sensitivity.SENSITIVE_READ),
+        # Ordinary changes.
+        (["vm", "create"], Sensitivity.MUTATE),
+        (["vm", "start"], Sensitivity.MUTATE),
+        (["vm", "restart"], Sensitivity.MUTATE),
+        (["tag", "update"], Sensitivity.MUTATE),
+        # The dangerous end.
+        (["vm", "delete"], Sensitivity.PRIVILEGED),
+        (["group", "delete"], Sensitivity.PRIVILEGED),
+        (["role", "assignment", "create"], Sensitivity.PRIVILEGED),
+        (["lock", "delete"], Sensitivity.PRIVILEGED),
+        (["network", "nsg", "rule", "create"], Sensitivity.PRIVILEGED),
+        (["storage", "account", "keys", "renew"], Sensitivity.PRIVILEGED),
+    ],
+)
+def test_az_classification(command: list[str], expected: Sensitivity) -> None:
+    assert az_tool().classify(command) is expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["login"],
+        ["ad", "sp", "create-for-rbac"],
+        ["logout"],
+        ["brand-new-service", "list"],
+        ["vm"],
+    ],
+)
+def test_an_unmapped_az_group_fails_closed(command: list[str]) -> None:
+    """The table is a short allowlist, not an attempt at completeness. That is
+    what catches `az login`, `az ad ...`, and every command a future CLI
+    release adds."""
+    assert az_tool().classify(command) is Sensitivity.PRIVILEGED
+
+
+def test_an_unmapped_verb_under_a_known_group_is_not_escalated() -> None:
+    """A considered departure from the plan, for the reason the AWS work
+    measured: a challenge that fires on everything stops working. An unknown
+    verb becomes an ARM action, which still prompts."""
+    assert az_tool().classify(["vm", "redeploy"]) is Sensitivity.MUTATE
+    assert az_tool().classify(["vm", "regenerate-key"]) is Sensitivity.PRIVILEGED
+
+
+@pytest.mark.parametrize(
+    ("command", "operation"),
+    [
+        (["vm", "delete"], "Microsoft.Compute/virtualMachines/delete"),
+        (["vm", "start"], "Microsoft.Compute/virtualMachines/start/action"),
+        (["vm", "list"], "Microsoft.Compute/virtualMachines/read"),
+        (["role", "assignment", "create"], "Microsoft.Authorization/roleAssignments/write"),
+        (["keyvault", "secret", "show"], "Microsoft.KeyVault/vaults/secrets/read"),
+        (["sql", "db", "delete"], "Microsoft.Sql/servers/databases/delete"),
+    ],
+)
+def test_the_cli_and_the_sdk_agree(command: list[str], operation: str) -> None:
+    """One command must not get two different answers depending on which door
+    it came through. This is the test that would have caught the AWS drift bug
+    had it existed then."""
+    assert az_tool().classify(command) is az.classify(operation)
+
+
+async def test_az_refuses_a_subscription_it_was_handed(tmp_path: Any) -> None:
+    """One credential sees many subscriptions and Altus acts in exactly one, so
+    a command that picks its own would be approved against a target it is not
+    going to touch."""
+    ctx = context(tmp_path, FakeAzure())
+    ctx.cloud.cli_allowlist = ("az",)
+    outcome = await az_tool().run({"args": ["vm", "list", "--subscription", "sub-9999"]}, ctx)
+    assert outcome.is_error
+    assert outcome.summary == "reserved flag"
+    assert "--subscription" in outcome.content
+
+
+async def test_az_is_handed_the_session_subscription(tmp_path: Any, monkeypatch: Any) -> None:
+    """Supplied by Altus, the way kubectl is given --context.
+
+    Both the binary lookup and the exec are stubbed so this asserts on every
+    machine rather than skipping wherever the CLI happens not to be installed.
+    """
+    import altus.tools.cli as cli_module
+
+    seen: list[list[str]] = []
+
+    async def fake_execute(path: str, argv: list[str], **kw: Any) -> tuple[int, str, str]:
+        seen.append(argv)
+        return 0, "[]", ""
+
+    monkeypatch.setattr(cli_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_module, "_execute", fake_execute)
+
+    ctx = context(tmp_path, FakeAzure())
+    ctx.cloud.cli_allowlist = ("az",)
+    outcome = await az_tool().run({"args": ["vm", "list"]}, ctx)
+    assert not outcome.is_error
+    assert seen == [["vm", "list", "--subscription", "sub-0000"]]
+
+
+def test_az_can_be_switched_off_without_taking_kubectl(tmp_path: Any) -> None:
+    """Kubernetes gates the whole CLI layer because that switch predates the
+    others. Azure only gates its own binary."""
+    settings = CloudSettings()
+    settings.azure.allow_cli = False
+    names = default_registry(kubernetes=False, aws=False, azure=False, cloud=settings).names
+    assert "azure_cli" not in names
+    assert "k8s_kubectl" in names
+
+
+# ------------------------------------------------------------ the front door
+
+
+def test_the_azure_dashboard_uses_the_azure_panels() -> None:
+    from altus.tui.screens.dashboard import AZURE_PANELS, PANELS_BY_CLOUD, DashboardScreen
+
+    screen = DashboardScreen("sub-0000", cloud="azure")
+    assert screen.panels == AZURE_PANELS
+    assert {tool for _title, tool, _args in AZURE_PANELS} <= {
+        "azure_topology",
+        "azure_inventory",
+        "azure_cost",
+        "azure_whoami",
+    }
+    assert set(PANELS_BY_CLOUD) == {"k8s", "aws", "azure"}
+
+
+def test_only_kubernetes_panels_take_a_scope_argument() -> None:
+    """AWS reads its region and Azure its subscription from the session, so
+    passing one per panel would send an argument the tool does not declare."""
+    from altus.tui.screens.dashboard import AZURE_PANELS
+
+    assert all(args == {} for _title, _tool, args in AZURE_PANELS)

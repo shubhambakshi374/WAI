@@ -4,10 +4,10 @@ A terminal coding and DevOps harness with bring-your-own-key support for eight
 LLM providers — and, ahead of it, a workflow designer that turns the harness
 into a software factory.
 
-> **Status: Phase 2b.** Streaming chat across all eight providers; filesystem
-> tools behind a diff-first approval gate; and **Kubernetes** --- reads that
-> draw you a picture, and changes gated on a server-side dry run. AWS, Azure
-> and GCP land in 2c–2e.
+> **Status: Phase 2d.** Streaming chat across all eight providers; filesystem
+> tools behind a diff-first approval gate; and three clouds --- **Kubernetes**,
+> **AWS** and **Azure** --- with reads that draw you a picture and changes
+> gated on whatever preview that cloud actually offers. GCP lands in 2e.
 
 ## Install
 
@@ -180,7 +180,8 @@ for the command you are writing.
 | `/login` · `/login <cloud>` | Cloud auth status, or sign in |
 | `/kube` · `/kube use <ctx>` · `/kube add <path>` | Kubernetes contexts |
 | `/aws` · `/aws region <name>` · `/aws profile <name>` | AWS identity, account and region |
-| `/dashboard [aws \| k8s] [<scope>]` | Several read-only views on one screen |
+| `/azure` · `/azure sub <id>` | Azure tenant, subscription and identity |
+| `/dashboard [aws \| azure \| k8s] [<scope>]` | Several read-only views on one screen |
 | `/graphics [auto \| image \| cells \| off]` | How visuals are drawn, and why |
 | `/tools` | Tools, installed integrations, standing approvals |
 | `/new` | Start a fresh session |
@@ -229,6 +230,57 @@ allow_cost_explorer = true   # Cost Explorer bills per request
 
 `aws_cost` costs money — roughly $0.01 a call — so it says so in its own
 description, and it is left off the dashboard, which refreshes on a keypress.
+
+## Azure
+
+Azure Resource Manager is already a generic API — every management operation is
+an HTTP verb on a resource path — so Altus talks to it directly rather than
+through two hundred `azure-mgmt-*` packages:
+
+```
+> what's in this subscription, what does it cost, and what's exposed to the internet
+```
+
+`azure_inventory` and `azure_topology` are each a single Resource Graph query
+rather than a walk of every service; `azure_query` hands you raw KQL across the
+whole subscription. `azure_cost` charts spend by service — Cost Management is
+**free**, unlike AWS Cost Explorer, so it sits on the dashboard. `azure_quotas`
+plots real current usage against each ceiling, which the AWS version could not.
+
+`api-version` is never guessed. It is mandatory, differs per resource type, and
+`azure_explain` resolves it for you along with every RBAC operation the type
+defines — a call pinned to a wrong version fails in a way that looks like the
+resource is gone.
+
+**Reads run freely. Everything else asks**, and the prompt names which check
+actually ran:
+
+| | |
+|---|---|
+| `azure_write` | **What-If** — a real server-side, property-level diff |
+| `azure_delete` | No preview exists. A resource-lock check, plus RBAC |
+| `azure_action` | No preview exists. RBAC |
+
+What-If is the closest any cloud gets to `kubectl diff`, so an Azure write is
+gated more like a Kubernetes one than an AWS one. A `CanNotDelete` lock refuses
+a delete outright, before you are asked — AWS has no equivalent check at all.
+
+Classification parses rather than guesses: Azure states its verb in a closed
+set of four, and `action` is the interesting one because it covers both `start`
+and `listKeys`. Scope counts too — the same delete removes one diagnostic
+setting at a resource and every one of them a subscription up.
+
+```toml
+[cloud.azure]
+allow_writes      = true
+allow_rbac_writes = true   # roles, policy, and locks — checked at the gate
+allow_delete      = true
+allow_cli         = true   # the `az` fallback
+```
+
+One credential commonly sees many subscriptions. Altus acts in exactly one, so
+the target named in a prompt is the one that gets touched — switch it with
+`/azure sub <id>`, and widen a Resource Graph query explicitly when you mean to.
 
 ## Kubernetes
 
@@ -599,7 +651,8 @@ tests/         mirrors it; tests/__snapshots__ holds the TUI SVGs
 - **Phase 2b — Kubernetes.** ✅ Topology, usage, storage, metrics, schema lookup, and changes behind a dry-run gate.
 - **Local models.** ✅ Ollama, LM Studio, vLLM, llama.cpp — discovered, capability-checked, no key.
 - **Phase 2c — AWS.** ✅ Inventory, VPC topology, cost, quotas, and any operation behind a gate that says what it could check.
-- **Phase 2d–2e —** Azure/GCP, and further CLI fallback.
+- **Phase 2d — Azure.** ✅ Resource Graph inventory and topology, cost, quotas, and changes behind a gate that runs a real What-If diff where one exists.
+- **Phase 2e —** GCP, and further CLI fallback.
 - **Phase 3 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
 - **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
 

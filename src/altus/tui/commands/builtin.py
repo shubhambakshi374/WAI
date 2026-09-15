@@ -351,22 +351,77 @@ async def cmd_dashboard(app: AltusApp, args: list[str]) -> CommandResult:
     """Four read-only views of one namespace, on one screen."""
     from altus.tui.screens.dashboard import DashboardScreen
 
+    clouds = {"k8s", "aws", "azure"}
     wanted = (args[0] if args else "").casefold()
-    cloud = "aws" if wanted == "aws" else "k8s"
-    rest = args[1:] if wanted in {"aws", "k8s"} else args
+    cloud = wanted if wanted in clouds else "k8s"
+    rest = args[1:] if wanted in clouds else args
 
-    probe = "aws_topology" if cloud == "aws" else "k8s_topology"
-    if probe not in app.registry:
-        hint = (
-            "AWS tools are not available in this session."
-            if cloud == "aws"
-            else "Kubernetes tools are not available. Install with: uv sync --extra k8s"
-        )
-        return CommandResult.error(hint)
+    hints = {
+        "aws": "AWS tools are not available in this session.",
+        "azure": "Azure tools are not available. Install with: uv sync --extra azure",
+        "k8s": "Kubernetes tools are not available. Install with: uv sync --extra k8s",
+    }
+    if f"{cloud}_topology" not in app.registry:
+        return CommandResult.error(hints[cloud])
 
-    scope = rest[0] if rest else ("" if cloud == "aws" else "default")
+    scope = rest[0] if rest else ("default" if cloud == "k8s" else "")
     app.push_screen(DashboardScreen(scope, setting=app.config.ui.graphics, cloud=cloud))
     return CommandResult.silent()
+
+
+async def cmd_azure(app: AltusApp, args: list[str]) -> CommandResult:
+    """Tenant, subscription and principal --- and switching subscription.
+
+    Switching asks nothing here because it changes no cloud state, but it does
+    change the blast radius of every later call, so it reports what it moved to
+    and whether that subscription is protected.
+    """
+    from altus.cloud.auth import status
+    from altus.cloud.azure import target_for
+    from altus.cloud.base import ProtectionRules
+    from altus.config import save_config
+
+    settings = app.config.cloud
+    rules = ProtectionRules.build(
+        settings.protected.patterns, settings.protected.accounts, settings.protected.mode
+    )
+    provider = getattr(app.tool_ctx.cloud, "azure", None)
+
+    if args and args[0] in {"sub", "subscription"}:
+        if len(args) < 2:
+            return CommandResult.error("usage: /azure sub <subscription-id>")
+        chosen = args[1]
+        settings.azure_subscription = chosen
+        save_config(app.config)
+        if provider is not None:
+            provider.subscription = chosen
+            provider.reset()
+        app.tool_ctx.cloud.azure_subscription = chosen
+        protected = rules.matches(target_for(chosen))
+        note = "  ⚠ this subscription is protected" if protected else ""
+        return CommandResult(f"Azure subscription set to {chosen}.{note}")
+
+    current = await asyncio.to_thread(status, "azure")
+    if not current.authenticated:
+        return CommandResult.warn(f"Not signed in to Azure: {current.detail or current.hint}")
+
+    rows = ["Azure:", f"  {current.source or 'credentials'}  {current.detail}"]
+    if provider is not None:
+        try:
+            identity = await provider.whoami()
+        except Exception as exc:
+            rows.append(f"  could not read identity: {exc}")
+        else:
+            subscription = settings.azure_subscription or ""
+            protected = bool(subscription) and rules.matches(target_for(subscription))
+            rows.append(f"  tenant        {identity['tenant']}")
+            rows.append(f"  principal     {identity['principal'] or identity['object_id']}")
+            rows.append(
+                f"  subscription  {subscription or '(none selected)'}"
+                f"{'  ⚠ protected' if protected else ''}"
+            )
+    rows.append("\n  /azure sub <id>   ·   list them with the azure_subscriptions tool")
+    return CommandResult("\n".join(rows), title="Azure")
 
 
 async def cmd_graphics(app: AltusApp, args: list[str]) -> CommandResult:
@@ -445,11 +500,17 @@ def build_registry() -> CommandRegistry:
             "aws [region <name> | profile <name>]",
             cmd_aws,
         ),
+        Command(
+            "azure",
+            "Azure tenant, subscription and identity",
+            "azure [sub <id>]",
+            cmd_azure,
+        ),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),
         Command(
             "dashboard",
             "Several read-only views on one screen",
-            "dashboard [aws | k8s] [<scope>]",
+            "dashboard [aws | azure | k8s] [<scope>]",
             cmd_dashboard,
         ),
         Command(
