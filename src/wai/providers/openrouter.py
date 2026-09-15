@@ -19,7 +19,7 @@ class OpenRouterProvider(OpenAIProvider):
     def default_headers(self) -> dict[str, str]:
         """OpenRouter attributes traffic by these; both are optional."""
         headers = {
-            "HTTP-Referer": "https://github.com/packet-burst/WAI",
+            "HTTP-Referer": "https://github.com/shubhambakshi374/WAI",
             "X-Title": "WAI",
         }
         headers.update(self.settings.extra_headers)
