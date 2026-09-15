@@ -490,3 +490,134 @@ def test_the_layout_engine_is_shared_not_copied() -> None:
         assert "wai.render.layout" in imported, f"{name} should use the shared layout"
         source = (root / name).read_text(encoding="utf-8")
         assert "def forest(" not in source, f"{name} reimplements forest()"
+
+
+# ------------------------------------------------------ what the terminal can do
+
+# Detection is a pure function over an environment mapping, not a probe. A probe
+# needs a real TTY --- so it cannot run here, cannot run in CI, and answers
+# differently depending on who is watching.
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"TERM": "xterm-kitty"}, "image"),
+        ({"TERM": "xterm-256color", "KITTY_WINDOW_ID": "1"}, "image"),
+        ({"TERM": "xterm-256color", "TERM_PROGRAM": "ghostty"}, "image"),
+        ({"TERM": "xterm-256color", "WEZTERM_PANE": "0"}, "image"),
+        ({"TERM": "xterm-256color", "TERM_PROGRAM": "iTerm.app"}, "image"),
+        # The one the author actually runs.
+        ({"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}, "cells"),
+        ({"TERM": "xterm-256color"}, "cells"),
+        ({"TERM": "xterm-256color", "TERM_PROGRAM": "vscode"}, "cells"),
+        ({"TERM": "dumb"}, "text"),
+        ({}, "text"),
+    ],
+)
+def test_terminals_are_recognised_or_assumed_modest(env: dict[str, str], expected: str) -> None:
+    from wai.render.capability import detect
+
+    assert detect(env).value == expected
+
+
+def test_warp_is_denied_despite_claiming_support() -> None:
+    """Warp answers the graphics query affirmatively but does not implement the
+    unicode placeholders textual-image uses. Believing it produces a broken
+    screen, so it is denied by name rather than trusted."""
+    from wai.render.capability import detect
+
+    assert detect({"TERM": "xterm-256color", "TERM_PROGRAM": "WarpTerminal"}).value == "cells"
+
+
+@pytest.mark.parametrize("wrapper", [{"TMUX": "/tmp/x,1,0"}, {"TERM": "screen-256color"}])
+def test_multiplexers_do_not_get_images(wrapper: dict[str, str]) -> None:
+    """Images inside tmux need passthrough that is off by default and mangles
+    output when missing. Not worth the gamble."""
+    from wai.render.capability import detect
+
+    env = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", **wrapper}
+    assert detect(env).value == "cells"
+
+
+def test_an_unknown_terminal_gets_cells_not_images() -> None:
+    """Guessing low costs a nicer picture. Guessing high sprays escape codes."""
+    from wai.render.capability import detect
+
+    assert detect({"TERM": "something-nobody-has-heard-of"}).value == "cells"
+
+
+# -------------------------------------------------------------- the setting
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [("off", "text"), ("text", "text"), ("cells", "cells"), ("image", "image"), ("auto", "image")],
+)
+def test_the_setting_is_applied_on_top_of_detection(setting: str, expected: str) -> None:
+    from wai.render.capability import resolve
+
+    assert resolve(setting, {"TERM": "xterm-kitty"}).value == expected
+
+
+def test_asking_for_images_on_a_terminal_that_cannot_show_them_yields_cells() -> None:
+    """The explicit values are a ceiling, not a floor. The alternative to
+    refusing is a screen full of escape codes."""
+    from wai.render.capability import resolve
+
+    env = {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}
+    assert resolve("image", env).value == "cells"
+    assert resolve("on", env).value == "cells"
+
+
+def test_an_unknown_setting_falls_back_to_auto() -> None:
+    from wai.render.capability import available, resolve
+
+    env = {"TERM": "xterm-kitty"}
+    assert resolve("nonsense", env) == available(env)
+
+
+def test_off_beats_a_capable_terminal() -> None:
+    from wai.render.capability import resolve
+
+    assert resolve("off", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}).value == "text"
+
+
+def test_support_levels_are_ordered() -> None:
+    from wai.render.capability import Support
+
+    assert Support.IMAGE.at_least(Support.CELLS)
+    assert Support.CELLS.at_least(Support.TEXT)
+    assert not Support.TEXT.at_least(Support.CELLS)
+
+
+# ----------------------------------------------------------------- explaining
+
+
+def test_every_reason_for_no_pictures_is_explainable() -> None:
+    """ "Why are there no pictures" should be answerable inside the app."""
+    from wai.render.capability import explain
+
+    cases = {
+        "off": {"TERM": "xterm-kitty"},
+        "auto": {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"},
+        "cells": {"TERM": "xterm-kitty"},
+    }
+    for setting, env in cases.items():
+        message = explain(setting, env)
+        assert message and not message.endswith(("  ", ":"))
+        assert message[0].islower(), "reads as a continuation of a label"
+
+
+def test_the_explanation_names_the_terminals_that_would_work() -> None:
+    from wai.render.capability import explain
+
+    message = explain("auto", {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"})
+    assert "Kitty" in message and "Ghostty" in message
+
+
+def test_tmux_gets_its_own_explanation_rather_than_the_generic_one() -> None:
+    from wai.render.capability import explain
+
+    message = explain("auto", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", "TMUX": "/tmp/x"})
+    assert "tmux" in message

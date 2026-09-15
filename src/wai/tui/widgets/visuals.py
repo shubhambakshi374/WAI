@@ -14,6 +14,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, Label, Sparkline, Static
 
 from wai.core.visuals import (
@@ -179,8 +180,28 @@ class GraphView(Static):
         return text
 
 
-def build_view(model: Visual) -> Static | Vertical:
-    """One renderer per variant."""
+def build_view(model: Visual, *, setting: str = "auto", dark: bool = True) -> Widget:
+    """The best rendering this terminal can manage.
+
+    Falls straight through to the text views when graphics are off or the
+    variant is not one we draw, so the terminal-only path is unchanged from
+    what it has always been.
+    """
+    from wai.render.capability import Support, resolve
+
+    if resolve(setting) is Support.TEXT:
+        return build_text_view(model)
+    from wai.tui.widgets.graphics import GraphicsPanel
+
+    if isinstance(model, VisualGroup):
+        # A group is several visuals; each one chooses for itself.
+        return GroupView(model, setting=setting, dark=dark)
+    return GraphicsPanel(model, setting=setting, dark=dark)
+
+
+def build_text_view(model: Visual) -> Static | Vertical:
+    """One renderer per variant. The rendering that needs nothing of the
+    terminal beyond colour, and the floor everything else falls back to."""
     match model:
         case Bars():
             return BarsView(model)
@@ -200,15 +221,17 @@ def build_view(model: Visual) -> Static | Vertical:
 class GroupView(Vertical):
     DEFAULT_CSS = "GroupView { height: auto; } GroupView > Label { text-style: bold; }"
 
-    def __init__(self, model: VisualGroup) -> None:
+    def __init__(self, model: VisualGroup, *, setting: str = "auto", dark: bool = True) -> None:
         super().__init__()
         self.model = model
+        self.setting = setting
+        self.dark = dark
 
     def compose(self) -> ComposeResult:
         if self.model.title:
             yield Label(self.model.title, markup=False)
         for item in self.model.items:
-            yield build_view(item)
+            yield build_view(item, setting=self.setting, dark=self.dark)
 
 
 class VisualPanel(Vertical):
@@ -229,16 +252,21 @@ class VisualPanel(Vertical):
 
     can_focus = True
 
-    def __init__(self, model: Visual) -> None:
+    def __init__(self, model: Visual, *, setting: str = "auto") -> None:
         super().__init__()
         self.model = model
+        self.setting = setting
 
     def compose(self) -> ComposeResult:
-        yield build_view(self.model)
+        # The inline preview stays text: it sits in the middle of a scrolling
+        # transcript, where a tall drawing pushes the conversation off screen.
+        # Expanding is where the room is, so that is where graphics happen.
+        yield build_text_view(self.model)
         yield Label("press enter to expand", classes="expand-hint")
 
     def action_expand(self) -> None:
-        self.app.push_screen(VisualScreen(self.model))
+        setting = getattr(getattr(self.app, "config", None), "ui", None)
+        self.app.push_screen(VisualScreen(self.model, setting=getattr(setting, "graphics", "auto")))
 
     def on_click(self) -> None:
         self.focus()
@@ -262,15 +290,23 @@ class VisualScreen(ModalScreen[None]):
     VisualScreen .hint { color: $text-muted; padding-top: 1; }
     """
 
-    def __init__(self, model: Visual) -> None:
+    def __init__(self, model: Visual, *, setting: str = "auto") -> None:
         super().__init__()
         self.model = model
+        self.setting = setting
 
     def compose(self) -> ComposeResult:
         with Vertical():
             with VerticalScroll():
-                yield build_view(self.model)
-            yield Label("escape to close", classes="hint")
+                yield build_view(self.model, setting=self.setting)
+            yield Label(_expand_hint(self.setting), classes="hint", markup=False)
 
     def action_close(self) -> None:
         self.dismiss()
+
+
+def _expand_hint(setting: str) -> str:
+    """Say how this is being drawn, right where someone is looking at it."""
+    from wai.render.capability import explain
+
+    return f"escape to close · {explain(setting)}"

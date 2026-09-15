@@ -16,7 +16,10 @@ from textual.widgets.option_list import Option
 
 from wai.tui.commands.registry import Command, CommandRegistry
 
-MAX_SHOWN = 10
+#: A bare `/` is meant to show everything --- the popup exists so you do
+#: not have to know the names already. Keep this at or above the number of
+#: registered commands; tests/test_tui.py asserts the two stay in step.
+MAX_SHOWN = 16
 MAX_SIGNATURE = 34
 MIN_SUMMARY_MATCH = 2
 """Matching summaries on one character is noise: `/k` would offer `model`

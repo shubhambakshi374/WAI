@@ -1008,6 +1008,12 @@ async def test_a_bare_slash_offers_every_command() -> None:
         names = {s.command.name for s in panel.suggestions}
         assert {"help", "kube", "login", "provider", "model", "tools"} <= names
 
+        # Every one of them, not just the first screenful. Adding a command
+        # must not silently push another out of the list a bare slash shows.
+        from wai.tui.commands.builtin import build_registry
+
+        assert names == {command.name for command in build_registry().unique}
+
 
 async def test_suggestions_filter_as_you_type() -> None:
     app = make_app()
@@ -1444,3 +1450,145 @@ async def test_profile_command_is_reachable_from_the_app() -> None:
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
         assert "/profile" in _notices(pilot), "and it is advertised"
+
+
+# --------------------------------------------------------------- graphics
+
+# The fallback is the load-bearing part of terminal graphics. A terminal that
+# cannot draw must get a working screen, not an error and not escape codes.
+
+
+def _graph_visual():  # type: ignore[no-untyped-def]
+    from wai.core.visuals import GraphEdge, GraphNode, ResourceGraph
+
+    web = GraphNode(id="apps/v1/Deployment/shop/web", kind="Deployment", name="web", status="2/2")
+    pod = GraphNode(id="v1/Pod/shop/web-1", kind="Pod", name="web-1", status="Running")
+    return ResourceGraph(
+        title="shop",
+        nodes=[web, pod],
+        edges=[GraphEdge(source=web.id, target=pod.id, relation="owns")],
+    )
+
+
+APPLE = {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}
+KITTY = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}
+
+
+def test_graphics_off_gives_exactly_the_view_it_always_gave(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Nothing about the text path may change. It is what CI, a pipe and a
+    dumb terminal get, and it is the floor everything else falls back to."""
+    from wai.core.visuals import Bars
+    from wai.tui.widgets.visuals import BarsView, build_text_view, build_view
+
+    model = Bars(title="cpu", bars=[])
+    assert isinstance(build_view(model, setting="off"), BarsView)
+    assert type(build_view(model, setting="off")) is type(build_text_view(model))
+
+
+def test_a_terminal_without_graphics_still_draws_a_topology(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Terminal.app cannot show an image, but it can show a map --- and that
+    is the whole reason the cell back end exists."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+
+    panel = GraphicsPanel(_graph_visual(), setting="auto")
+    assert panel.support.value == "cells"
+    children = list(panel.compose())
+    assert any(isinstance(child, CellMap) for child in children)
+
+
+def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A bar chart as box characters is worse than the text rendering, which
+    was written for exactly this width and says the numbers out loud."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from wai.core.visuals import Bar, Bars
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+
+    panel = GraphicsPanel(Bars(title="cpu", bars=[Bar(label="a", value=1)]), setting="auto")
+    assert not any(isinstance(child, CellMap) for child in panel.compose())
+
+
+def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("os.environ", KITTY)
+    from wai.tui.widgets.graphics import GraphicsPanel, ImageMap
+
+    panel = GraphicsPanel(_graph_visual(), setting="auto")
+    assert panel.support.value == "image"
+    assert any(isinstance(child, ImageMap) for child in panel.compose())
+
+
+def test_a_visual_we_do_not_draw_falls_through_whatever_the_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("os.environ", KITTY)
+    from wai.core.visuals import Table
+    from wai.tui.widgets.graphics import GraphicsPanel
+    from wai.tui.widgets.visuals import TableView
+
+    panel = GraphicsPanel(Table(columns=["a"], rows=[["b"]]), setting="auto")
+    assert any(isinstance(child, TableView) for child in panel.compose())
+
+
+async def test_the_cell_map_renders_without_a_graphics_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Mounted for real, not just constructed."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from textual.app import App, ComposeResult
+
+    from wai.render import DARK
+    from wai.tui.widgets.graphics import CellMap
+
+    class Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield CellMap(_graph_visual(), DARK)
+
+    app = Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = app.query_one(CellMap).render()
+        assert "Deployment" in text.plain
+        assert "web-1" in text.plain
+
+
+async def test_clicking_a_node_in_the_cell_map_reports_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("os.environ", APPLE)
+    from textual.app import App, ComposeResult
+
+    from wai.render import DARK
+    from wai.tui.widgets.graphics import CellMap, NodeSelected
+
+    seen: list[str] = []
+
+    class Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield CellMap(_graph_visual(), DARK)
+
+        def on_node_selected(self, message: NodeSelected) -> None:
+            seen.append(message.node_id)
+
+    app = Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        widget = app.query_one(CellMap)
+        widget.render()  # populates the hit map
+        assert widget._grid is not None
+        hit = widget._grid.hits[0]
+        await pilot.click(CellMap, offset=(hit.box[0] + 2, hit.box[1] + 1))
+        await pilot.pause()
+    assert seen == [hit.node_id]
+
+
+async def test_graphics_command_explains_itself() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/graphics")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "Setting" in rendered and "Terminal" in rendered
+
+
+async def test_graphics_command_rejects_a_mode_that_does_not_exist() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/graphics sideways")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "auto | image | cells | off" in _notices(pilot)

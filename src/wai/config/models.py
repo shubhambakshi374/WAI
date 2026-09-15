@@ -134,6 +134,16 @@ class UISettings(BaseModel):
     stream_flush_ms: int = 50
     """How often streamed text is flushed into the transcript widget."""
     show_reasoning: bool = True
+    graphics: Literal["auto", "image", "cells", "off"] = "auto"
+    """How visuals are drawn.
+
+    `auto` follows the terminal: images where it speaks Kitty's protocol or
+    Sixel, box-drawing characters everywhere else. The explicit values are a
+    ceiling rather than a floor --- asking for images on a terminal that cannot
+    show them still yields cells, because the alternative is a broken screen.
+    """
+    graphics_font: str = ""
+    """Absolute path to a TTF for drawn labels. Empty means discover one."""
 
 
 DEFAULT_PROFILE_NAME = "default"
