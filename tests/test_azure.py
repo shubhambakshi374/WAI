@@ -625,10 +625,26 @@ async def test_can_i_reports_the_decision_and_the_sensitivity(tmp_path: Any) -> 
     assert outcome.summary == "1/1 allowed"
 
 
-def test_every_read_tool_is_declared_read_only() -> None:
-    """A read-only registry must not carry a change, and `read_only` is what
-    decides --- so it has to be right on every one of these."""
-    assert all(t.read_only for t in azure_tools())
+READ_TOOLS = {
+    "azure_whoami",
+    "azure_subscriptions",
+    "azure_providers",
+    "azure_explain",
+    "azure_get",
+    "azure_query",
+    "azure_can_i",
+    "azure_inventory",
+    "azure_topology",
+    "azure_cost",
+    "azure_quotas",
+}
+
+
+def test_read_only_is_declared_correctly_on_every_tool() -> None:
+    """`read_only` is what a read-only registry filters on, so it has to be
+    right on all of them --- in both directions."""
+    for found in azure_tools():
+        assert found.read_only == (found.name in READ_TOOLS), found.name
 
 
 def test_the_registry_registers_azure_when_it_is_asked_to(tmp_path: Any) -> None:
@@ -893,8 +909,7 @@ async def test_quotas_plot_real_usage_against_the_ceiling(tmp_path: Any) -> None
     assert "90%" in chart.caption
 
 
-async def test_every_curated_view_is_read_only() -> None:
-    assert all(t.read_only for t in azure_tools())
+def test_every_curated_view_is_registered() -> None:
     assert {t.name for t in azure_tools()} >= {
         "azure_inventory",
         "azure_topology",
@@ -945,3 +960,318 @@ async def test_a_map_that_does_not_fit_says_so(tmp_path: Any) -> None:
     roomy = render(40)
     assert "web1" in roomy
     assert "not shown" not in roomy
+
+
+# ------------------------------------------------------------------ mutations
+
+WHAT_IF_RESULT = {
+    "status": "Succeeded",
+    "properties": {
+        "changes": [
+            {
+                "resourceId": VM_ID,
+                "changeType": "Modify",
+                "delta": [
+                    {
+                        "path": "properties.hardwareProfile.vmSize",
+                        "propertyChangeType": "Modify",
+                        "before": "Standard_D2s_v3",
+                        "after": "Standard_D4s_v3",
+                    }
+                ],
+            }
+        ]
+    },
+}
+
+
+class WritableAzure(FakeAzure):
+    """FakeAzure plus the preflight surfaces, each independently steerable.
+
+    Separate because the failure that matters is a change escaping *before* an
+    approval, and that is only visible if every mutating path records itself.
+    """
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.what_if_result: dict[str, Any] | None = WHAT_IF_RESULT
+        self.what_if_error = ""
+        self.what_if_calls = 0
+
+    async def what_if(self, scope: str, resource: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        self.what_if_calls += 1
+        if self.what_if_error:
+            raise az.ArmError(403, "AuthorizationFailed", self.what_if_error)
+        return dict(self.what_if_result or {})
+
+    @property
+    def changing(self) -> list[tuple[str, str]]:
+        """Requests that were not reads. The deny sweep asserts this is empty."""
+        return [(m, p) for m, p in self.requests if m != "GET"]
+
+
+def deny() -> Any:
+    from wai.tools.approval import Decision, RecordingPolicy
+
+    return RecordingPolicy(decision=Decision.DENY)
+
+
+def allow() -> Any:
+    from wai.tools.approval import Decision, RecordingPolicy
+
+    return RecordingPolicy(decision=Decision.ALLOW)
+
+
+async def test_the_deny_sweep(tmp_path: Any) -> None:
+    """The assertion that caught most of the Kubernetes and AWS bugs.
+
+    Every mutating tool, refused: not one of them may have issued anything but
+    a read. A change that escapes before the approval returns is the single
+    failure this whole layer exists to prevent.
+    """
+    cases: list[tuple[str, dict[str, Any]]] = [
+        ("azure_write", {"id": VM_ID, "body": {"location": "westeurope"}}),
+        ("azure_delete", {"id": VM_ID}),
+        ("azure_action", {"id": VM_ID, "action": "start"}),
+    ]
+    for name, args in cases:
+        provider = WritableAzure()
+        policy = deny()
+        outcome = await tool(name).run(args, context(tmp_path, provider, approvals=policy))
+        assert outcome.is_error or "rejected" in outcome.content.casefold(), name
+        assert provider.changing == [], f"{name} issued {provider.changing}"
+        assert len(policy.seen) == 1, name
+
+
+async def test_write_puts_a_real_diff_in_the_prompt(tmp_path: Any) -> None:
+    """What-If is why the Azure gate can promise more than the AWS one."""
+    provider = WritableAzure()
+    policy = allow()
+    outcome = await tool("azure_write").run(
+        {
+            "id": VM_ID,
+            "body": {"properties": {"hardwareProfile": {"vmSize": "Standard_D4s_v3"}}},
+            "reason": "the box is undersized",
+        },
+        context(tmp_path, provider, approvals=policy),
+    )
+    assert not outcome.is_error
+    assert provider.what_if_calls == 1
+
+    request = policy.seen[0]
+    assert "What-If ran" in request.dry_run
+    assert "1 Modify" in request.dry_run
+    assert "no preview exists" not in request.dry_run
+    assert "Standard_D2s_v3" in request.diff and "Standard_D4s_v3" in request.diff
+    assert "the box is undersized" in request.diff
+    # And only after the approval returned.
+    assert provider.changing == [("PUT", VM_ID)]
+
+
+async def test_a_what_if_that_could_not_run_never_reads_as_no_changes(tmp_path: Any) -> None:
+    """The one sentence the prompt must never get wrong.
+
+    Plenty of identities can write a resource and cannot ask what writing it
+    would do. Reporting that as "no changes" would buy false confidence at
+    exactly the moment of consent.
+    """
+    provider = WritableAzure()
+    provider.what_if_error = "you may not run What-If here"
+    policy = allow()
+    await tool("azure_write").run(
+        {"id": VM_ID, "body": {"location": "westeurope"}},
+        context(tmp_path, provider, approvals=policy),
+    )
+    preflight = policy.seen[0].dry_run
+    assert "could not run" in preflight
+    assert "not known in advance" in preflight
+    assert "no changes" not in preflight
+
+
+async def test_what_if_reporting_no_changes_says_exactly_that(tmp_path: Any) -> None:
+    provider = WritableAzure()
+    provider.what_if_result = {"properties": {"changes": []}}
+    policy = allow()
+    await tool("azure_write").run(
+        {"id": VM_ID, "body": {"location": "westeurope"}},
+        context(tmp_path, provider, approvals=policy),
+    )
+    assert "reported no changes" in policy.seen[0].dry_run
+
+
+async def test_delete_and_action_admit_there_is_no_preview(tmp_path: Any) -> None:
+    for name, args in (
+        ("azure_delete", {"id": VM_ID}),
+        ("azure_action", {"id": VM_ID, "action": "start"}),
+    ):
+        provider = WritableAzure()
+        policy = allow()
+        await tool(name).run(args, context(tmp_path, provider, approvals=policy))
+        preflight = policy.seen[0].dry_run
+        assert "no preview exists" in preflight, name
+        assert "What-If" not in preflight, name
+        assert provider.what_if_calls == 0, name
+
+
+async def test_a_lock_refuses_before_anyone_is_asked(tmp_path: Any) -> None:
+    """A lock means the call will fail, so prompting would spend the user's
+    attention on a decision that does not exist. AWS had no equivalent check
+    at all."""
+    provider = WritableAzure()
+    provider.locks_found = [
+        {"name": "prod-guard", "level": "CanNotDelete", "notes": "", "scope": "/rg"}
+    ]
+    policy = allow()
+    outcome = await tool("azure_delete").run(
+        {"id": VM_ID}, context(tmp_path, provider, approvals=policy)
+    )
+    assert outcome.is_error
+    assert "prod-guard" in outcome.content
+    assert outcome.summary == "locked"
+    assert policy.seen == []
+    assert provider.changing == []
+
+
+async def test_an_unreadable_lock_is_not_treated_as_a_lock(tmp_path: Any) -> None:
+    """Plenty of working identities cannot list locks, and refusing on "I could
+    not check" would make the tool useless on those."""
+
+    class NoLockAccess(WritableAzure):
+        async def locks(self, scope: str) -> list[dict[str, str]]:
+            raise az.ArmError(403, "AuthorizationFailed", "denied")
+
+    provider = NoLockAccess()
+    policy = allow()
+    outcome = await tool("azure_delete").run(
+        {"id": VM_ID}, context(tmp_path, provider, approvals=policy)
+    )
+    assert not outcome.is_error
+    assert "lock check could not run" in policy.seen[0].dry_run
+
+
+async def test_rbac_refusal_stops_before_the_prompt(tmp_path: Any) -> None:
+    provider = WritableAzure()
+    provider.access = "NotAllowed"
+    policy = allow()
+    outcome = await tool("azure_delete").run(
+        {"id": VM_ID}, context(tmp_path, provider, approvals=policy)
+    )
+    assert outcome.is_error
+    assert outcome.summary == "refused"
+    assert policy.seen == []
+    assert provider.changing == []
+
+
+async def test_a_delete_of_something_stateful_demands_the_name_typed(tmp_path: Any) -> None:
+    """PRIVILEGED means a typed confirmation and forbids a standing grant --- a
+    blanket `allow always` on azure_delete would be indistinguishable from
+    having no gate."""
+    provider = WritableAzure()
+    policy = allow()
+    await tool("azure_delete").run({"id": VM_ID}, context(tmp_path, provider, approvals=policy))
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED
+    assert request.needs_challenge
+    assert not request.may_grant_always
+
+
+async def test_a_protected_subscription_escalates_an_ordinary_change(tmp_path: Any) -> None:
+    from wai.cloud.base import ProtectionRules
+
+    provider = WritableAzure()
+    policy = allow()
+    rules = ProtectionRules.build([], ["sub-0000"], "confirm")
+    await tool("azure_action").run(
+        {"id": VM_ID, "action": "start"},
+        context(tmp_path, provider, approvals=policy, protection=rules),
+    )
+    assert policy.seen[0].protected
+    assert policy.seen[0].needs_challenge
+
+
+async def test_protected_deny_refuses_outright(tmp_path: Any) -> None:
+    from wai.cloud.base import ProtectionRules
+
+    provider = WritableAzure()
+    policy = allow()
+    rules = ProtectionRules.build([], ["sub-0000"], "deny")
+    outcome = await tool("azure_action").run(
+        {"id": VM_ID, "action": "start"},
+        context(tmp_path, provider, approvals=policy, protection=rules),
+    )
+    assert outcome.is_error
+    assert policy.seen == []
+    assert provider.changing == []
+
+
+async def test_a_bad_id_is_reported_before_anything_is_sent(tmp_path: Any) -> None:
+    provider = WritableAzure()
+    outcome = await tool("azure_delete").run({"id": "web1"}, context(tmp_path, provider))
+    assert outcome.is_error
+    assert provider.requests == []
+
+
+ROLE_ASSIGNMENT_ID = (
+    "/subscriptions/sub-0000/resourceGroups/rg/providers"
+    "/Microsoft.Authorization/roleAssignments/ra1"
+)
+
+
+async def test_rbac_writes_can_be_switched_off_at_the_gate(tmp_path: Any) -> None:
+    """It cannot work by withholding a tool --- the same azure_write sets a tag
+    and a role assignment --- so it is checked where the decision is made."""
+
+    class KnowsRoleAssignments(WritableAzure):
+        KNOWN_TYPES: ClassVar[dict[str, str]] = {"roleassignments": "2022-04-01"}
+
+    provider = KnowsRoleAssignments()
+    policy = allow()
+    settings = AzureSettings(allow_rbac_writes=False)
+    outcome = await tool("azure_write").run(
+        {"id": ROLE_ASSIGNMENT_ID, "body": {"properties": {}}},
+        context(tmp_path, provider, settings=settings, approvals=policy),
+    )
+    assert outcome.is_error
+    assert "[cloud.azure]" in outcome.content
+    assert provider.changing == []
+
+    # And the same tool still writes an ordinary resource.
+    provider = WritableAzure()
+    outcome = await tool("azure_write").run(
+        {"id": VM_ID, "body": {"location": "westeurope"}},
+        context(tmp_path, provider, settings=settings, approvals=allow()),
+    )
+    assert not outcome.is_error
+
+
+@pytest.mark.parametrize(
+    ("settings", "present", "absent"),
+    [
+        (AzureSettings(), {"azure_write", "azure_delete", "azure_action"}, set()),
+        (AzureSettings(allow_delete=False), {"azure_write", "azure_action"}, {"azure_delete"}),
+        (
+            AzureSettings(allow_writes=False),
+            {"azure_get", "azure_query"},
+            {"azure_write", "azure_delete", "azure_action"},
+        ),
+    ],
+)
+def test_each_switch_removes_exactly_its_tools(
+    settings: AzureSettings, present: set[str], absent: set[str]
+) -> None:
+    """A class that is off is never registered, so the model is not told it
+    exists --- deliberately stronger than refusing at call time."""
+    names = {t.name for t in azure_tools(settings)}
+    assert present <= names
+    assert not (absent & names)
+
+
+def test_a_read_only_registry_carries_no_azure_change(tmp_path: Any) -> None:
+    """`writes=False` has to mean no writes, not no file writes. The AWS work
+    found a read-only registry still carrying aws_write."""
+    registry = default_registry(
+        writes=False, kubernetes=False, aws=False, azure=True, cloud=CloudSettings()
+    )
+    assert "azure_get" in registry
+    for name in ("azure_write", "azure_delete", "azure_action"):
+        assert name not in registry

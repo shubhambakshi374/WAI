@@ -16,6 +16,7 @@ from wai.tools.azure.insight import (
     AzureQuotasTool,
     AzureTopologyTool,
 )
+from wai.tools.azure.mutations import AzureActionTool, AzureDeleteTool, AzureWriteTool
 from wai.tools.azure.reads import (
     AzureCanITool,
     AzureExplainTool,
@@ -43,6 +44,12 @@ def azure_tools(settings: Any = None) -> list[BaseTool]:
         AzureCostTool(),
         AzureQuotasTool(),
     ]
+    if settings is None or getattr(settings, "allow_writes", True):
+        tools += [AzureWriteTool(), AzureActionTool()]
+        if getattr(settings, "allow_delete", True):
+            # Switched off means never registered, so the model is not told
+            # about a tool that would prompt and then refuse.
+            tools.append(AzureDeleteTool())
     return tools
 
 

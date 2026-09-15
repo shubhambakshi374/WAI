@@ -456,6 +456,14 @@ class AzureProvider:
     async def _request(
         self, method: str, url: str, body: dict[str, Any] | None, params: dict[str, str]
     ) -> dict[str, Any]:
+        _status, _headers, payload = await self._send(method, url, body, params)
+        return payload
+
+    async def _send(
+        self, method: str, url: str, body: dict[str, Any] | None, params: dict[str, str]
+    ) -> tuple[int, dict[str, str], dict[str, Any]]:
+        """The raw exchange. Headers are returned because long-running
+        operations carry their poll URL in one, and nowhere else."""
         token = await self.token()
         response = await self._http().request(
             method.upper(),
@@ -464,8 +472,9 @@ class AzureProvider:
             json=body,
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
+        headers = {key.casefold(): value for key, value in response.headers.items()}
         if response.status_code == 204 or not (response.content or b"").strip():
-            return {"status": response.status_code}
+            return response.status_code, headers, {"status": response.status_code}
         try:
             payload = response.json()
         except ValueError:
@@ -478,7 +487,97 @@ class AzureProvider:
                 str(error.get("code", "")),
                 str(error.get("message", "")) or str(payload)[:400],
             )
-        return payload if isinstance(payload, dict) else {"value": payload}
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        return response.status_code, headers, payload
+
+    #: Statuses a long-running operation reports while it is still going.
+    PENDING: frozenset[str] = frozenset({"inprogress", "running", "accepted", "notstarted"})
+
+    async def call_lro(
+        self,
+        method: str,
+        path: str,
+        *,
+        api_version: str = "",
+        body: dict[str, Any] | None = None,
+        wait_seconds: float = 120.0,
+        interval: float = 2.0,
+    ) -> dict[str, Any]:
+        """A request that ARM may answer asynchronously, followed to its end.
+
+        What-If is the one that forces this: ARM accepts it with a 202 and a
+        poll URL, so a caller that only reads the immediate response gets an
+        empty acknowledgement where the diff should be. Returning that as the
+        preflight would put "no changes" in an approval prompt for a change
+        that has not been evaluated yet --- the exact false confidence the
+        whole gate exists to avoid.
+        """
+        import time
+
+        query = {"api-version": api_version} if api_version else {}
+        url = path if path.startswith("http") else f"{ARM}{path}"
+        status, headers, payload = await self._send(method, url, body, query)
+        poll = headers.get("azure-asyncoperation") or headers.get("location") or ""
+        if status < 202 or not poll:
+            return payload
+
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            await asyncio.sleep(interval)
+            _status, _headers, payload = await self._send("GET", poll, None, {})
+            state = str(payload.get("status", "")).casefold()
+            if state and state not in self.PENDING:
+                return payload
+            if not state:
+                return payload
+        raise ArmError(
+            408,
+            "Timeout",
+            f"the operation was still running after {wait_seconds:g}s; WAI stopped waiting "
+            "rather than report a result it does not have",
+        )
+
+    async def what_if(
+        self,
+        group_scope: str,
+        resource: dict[str, Any],
+        *,
+        mode: str = "Incremental",
+        wait_seconds: float = 120.0,
+    ) -> dict[str, Any]:
+        """A server-side, property-level diff of one resource.
+
+        The closest any cloud gets to ``kubectl diff``, and the reason the
+        Azure gate can promise more than the AWS one. A generic ARM PUT body
+        *is* a resource definition, so it can be wrapped in a one-resource
+        template and genuinely evaluated against what is deployed.
+
+        Incremental mode on purpose: Complete mode would report deleting
+        everything in the scope that the template does not mention, which for a
+        one-resource template is the entire resource group.
+        """
+        name = f"wai-whatif-{int(asyncio.get_running_loop().time() * 1000) % 1_000_000}"
+        return await self.call_lro(
+            "POST",
+            f"/{group_scope.strip('/')}/providers/Microsoft.Resources/deployments/{name}/whatIf",
+            api_version=DEPLOYMENTS_API,
+            body={
+                "properties": {
+                    "mode": mode,
+                    "template": {
+                        "$schema": (
+                            "https://schema.management.azure.com/schemas/2019-04-01/"
+                            "deploymentTemplate.json#"
+                        ),
+                        "contentVersion": "1.0.0.0",
+                        "resources": [resource],
+                    },
+                    "parameters": {},
+                }
+            },
+            wait_seconds=wait_seconds,
+        )
 
     # --------------------------------------------------------- introspection
 
