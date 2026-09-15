@@ -103,6 +103,7 @@ class K8sClient:
         namespace: str | None = None,
         *,
         label_selector: str | None = None,
+        field_selector: str | None = None,
         limit: int = DEFAULT_LIMIT,
     ) -> list[dict[str, Any]]:
         """One kind. Returns plain dicts --- no SDK objects escape this module.
@@ -119,6 +120,8 @@ class K8sClient:
                 kwargs["namespace"] = namespace
             if label_selector:
                 kwargs["label_selector"] = label_selector
+            if field_selector:
+                kwargs["field_selector"] = field_selector
             result = resource.get(**kwargs)
             raw = result.to_dict() if hasattr(result, "to_dict") else dict(result)
             return list(raw.get("items") or [])

@@ -1042,6 +1042,8 @@ async def test_mutating_tools_are_marked_as_such() -> None:
         "k8s_scale",
         "k8s_rollout",
         "k8s_use_context",
+        "k8s_node",
+        "k8s_drain",
     }
 
 
@@ -1681,3 +1683,216 @@ async def test_switching_context_drops_the_cached_client() -> None:
     cloud.switch_context("AKS_EU_PROD", "default")
     assert provider.context == "AKS_EU_PROD"
     assert provider._client is None
+
+
+# ---------------------------------------------------------------- node lifecycle
+
+
+NODE = {"kind": "Node", "metadata": {"name": "node-7"}, "spec": {}}
+
+
+def node_pod(name, *, owner="ReplicaSet", ns="shop", mirror=False, empty_dir=False):  # type: ignore[no-untyped-def]
+    meta: dict[str, Any] = {"name": name, "namespace": ns}
+    if owner:
+        meta["ownerReferences"] = [{"kind": owner, "name": "x"}]
+    if mirror:
+        meta["annotations"] = {"kubernetes.io/config.mirror": "abc"}
+    volumes = [{"name": "d", "emptyDir": {}}] if empty_dir else []
+    return {"kind": "Pod", "metadata": meta, "spec": {"nodeName": "node-7", "volumes": volumes}}
+
+
+class NodeClient(MutableClient):
+    """A cluster with one node and whatever pods the test puts on it."""
+
+    def __init__(self, pods: list[dict[str, Any]] | None = None, **kw: Any) -> None:
+        super().__init__({"Pod": pods or [], "PodDisruptionBudget": []}, live=NODE, **kw)
+        self.evicted: list[str] = []
+
+    async def subresource(
+        self,
+        method,
+        api_version,
+        kind,
+        name,
+        subresource,
+        *,
+        namespace=None,
+        body=None,
+        dry_run=False,
+    ):  # type: ignore[no-untyped-def]
+        self.subresources.append((method, kind, name, subresource, dry_run))
+        if subresource == "eviction":
+            self.evicted.append(f"{namespace}/{name}")
+        return {}
+
+
+def node_context(client, tmp_path, policy):  # type: ignore[no-untyped-def]
+    return mutation_context(client, tmp_path, policy)
+
+
+async def test_cordon_is_privileged_and_needs_a_typed_confirmation(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = NodeClient()
+    policy = approving()
+    out = await tool("k8s_node").run(
+        {"node": "node-7", "action": "cordon"}, node_context(client, tmp_path, policy)
+    )
+    assert not out.is_error, out.content
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED, "writing a Node is privileged"
+    assert request.needs_challenge and not request.may_grant_always
+    assert client.real_patches == [{"spec": {"unschedulable": True}}]
+
+
+async def test_cordon_twice_is_a_no_op(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = NodeClient()
+    client.live = {**NODE, "spec": {"unschedulable": True}}
+    policy = approving()
+    out = await tool("k8s_node").run(
+        {"node": "node-7", "action": "cordon"}, node_context(client, tmp_path, policy)
+    )
+    assert out.summary == "no change"
+    assert policy.seen == []
+
+
+async def test_a_no_execute_taint_says_it_evicts(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """NoSchedule and NoExecute differ by whether running pods are thrown off.
+    That distinction has to reach the prompt."""
+    client = NodeClient()
+    policy = approving()
+    await tool("k8s_node").run(
+        {"node": "node-7", "action": "taint", "key": "maintenance", "effect": "NoExecute"},
+        node_context(client, tmp_path, policy),
+    )
+    assert "evicts running pods" in policy.seen[0].diff
+
+
+async def test_taint_rejects_an_unknown_effect(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    policy = approving()
+    out = await tool("k8s_node").run(
+        {"node": "node-7", "action": "taint", "key": "k", "effect": "NoBananas"},
+        node_context(NodeClient(), tmp_path, policy),
+    )
+    assert out.is_error
+    assert policy.seen == []
+
+
+async def test_untaint_removes_only_the_matching_taint(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = NodeClient()
+    client.live = {
+        **NODE,
+        "spec": {
+            "taints": [
+                {"key": "a", "effect": "NoSchedule"},
+                {"key": "b", "effect": "NoSchedule"},
+            ]
+        },
+    }
+    await tool("k8s_node").run(
+        {"node": "node-7", "action": "untaint", "key": "a"},
+        node_context(client, tmp_path, approving()),
+    )
+    remaining = client.real_patches[0]["spec"]["taints"]
+    assert [t["key"] for t in remaining] == ["b"]
+
+
+async def test_drain_skips_daemonset_and_mirror_pods(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Evicting a DaemonSet pod loops — it is recreated on the same node. A
+    mirror pod cannot be evicted at all."""
+    client = NodeClient(
+        [
+            node_pod("web-1"),
+            node_pod("agent-1", owner="DaemonSet"),
+            node_pod("static-1", owner=None, mirror=True),
+        ]
+    )
+    out = await tool("k8s_drain").run(
+        {"node": "node-7"}, node_context(client, tmp_path, approving())
+    )
+    assert not out.is_error, out.content
+    assert client.evicted == ["shop/web-1"]
+    assert "2 skipped" in out.content
+
+
+async def test_drain_refuses_a_standalone_pod_unless_forced(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Nothing recreates it, so evicting it simply destroys it."""
+    client = NodeClient([node_pod("orphan", owner=None)])
+    policy = approving()
+    out = await tool("k8s_drain").run({"node": "node-7"}, node_context(client, tmp_path, policy))
+    assert out.is_error
+    assert "no controller" in out.content
+    assert policy.seen == [], "refused before anyone is asked"
+    assert client.evicted == []
+
+    forced = await tool("k8s_drain").run(
+        {"node": "node-7", "force": True}, node_context(client, tmp_path, approving())
+    )
+    assert not forced.is_error, forced.content
+    assert client.evicted == ["shop/orphan"]
+
+
+async def test_drain_refuses_emptydir_data_unless_told(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = NodeClient([node_pod("cache-1", empty_dir=True)])
+    out = await tool("k8s_drain").run(
+        {"node": "node-7"}, node_context(client, tmp_path, approving())
+    )
+    assert out.is_error and "emptyDir" in out.content
+
+    allowed = await tool("k8s_drain").run(
+        {"node": "node-7", "delete_emptydir_data": True},
+        node_context(client, tmp_path, approving()),
+    )
+    assert not allowed.is_error
+    assert client.evicted == ["shop/cache-1"]
+
+
+async def test_drain_evicts_rather_than_deletes(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The API server enforces PodDisruptionBudgets on an eviction and ignores
+    them for a delete. Using the wrong one silently defeats every budget."""
+    client = NodeClient([node_pod("web-1")])
+    await tool("k8s_drain").run({"node": "node-7"}, node_context(client, tmp_path, approving()))
+    assert client.real_deletes == [], "nothing may be deleted outright"
+    assert [s[3] for s in client.subresources] == ["eviction"]
+
+
+async def test_drain_names_the_pod_count_and_the_budgets(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """ "drain node-7" is not a decision anyone can make."""
+    client = NodeClient([node_pod("web-1"), node_pod("web-2")])
+    client.objects["PodDisruptionBudget"] = [{"metadata": {"name": "web-pdb"}}]
+    policy = approving()
+    await tool("k8s_drain").run({"node": "node-7"}, node_context(client, tmp_path, policy))
+    request = policy.seen[0]
+    assert "evict 2 pods" in request.diff
+    assert "shop/web-1" in request.diff
+    assert "web-pdb" in request.dry_run
+
+
+async def test_drain_cordons_before_evicting(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Evicting without cordoning first lets the scheduler put the pods back."""
+    client = NodeClient([node_pod("web-1")])
+    await tool("k8s_drain").run({"node": "node-7"}, node_context(client, tmp_path, approving()))
+    assert client.real_patches[0] == {"spec": {"unschedulable": True}}
+
+
+async def test_drain_reports_a_budget_refusal_instead_of_retrying(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A 429 is the PodDisruptionBudget doing its job."""
+
+    class Blocked(NodeClient):
+        async def subresource(self, *a: Any, **kw: Any) -> Any:
+            raise RuntimeError("429 Cannot evict pod as it would violate the budget")
+
+    client = Blocked([node_pod("web-1")])
+    out = await tool("k8s_drain").run(
+        {"node": "node-7"}, node_context(client, tmp_path, approving())
+    )
+    assert out.is_error
+    assert "PodDisruptionBudget" in out.content
+    assert "1 refused" in out.content
+
+
+async def test_drain_with_nothing_to_evict_does_nothing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = NodeClient([])
+    policy = approving()
+    out = await tool("k8s_drain").run({"node": "node-7"}, node_context(client, tmp_path, policy))
+    assert not out.is_error
+    assert policy.seen == []
+    assert client.real_patches == [], "not even the cordon"

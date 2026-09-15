@@ -29,6 +29,7 @@ from wai.tools.k8s.mutations import (
     K8sRolloutTool,
     K8sScaleTool,
 )
+from wai.tools.k8s.nodes import K8sDrainTool, K8sNodeTool
 from wai.tools.k8s.reads import (
     K8sApiResourcesTool,
     K8sCanITool,
@@ -67,6 +68,8 @@ def k8s_tools() -> list[BaseTool]:
         K8sDeleteTool(),
         K8sScaleTool(),
         K8sRolloutTool(),
+        K8sNodeTool(),
+        K8sDrainTool(),
         K8sUseContextTool(),
     ]
 
