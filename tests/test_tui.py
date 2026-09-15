@@ -9,22 +9,22 @@ from typing import ClassVar
 from textual.widgets import Label
 from textual.worker import WorkerCancelled
 
+from altus.agent import unanswered_tool_uses
+from altus.config.models import Config
+from altus.core.errors import RateLimitError
+from altus.core.events import MessageEnd, MessageStart, ReasoningDelta, TextDelta, Usage
+from altus.core.types import ModelInfo, Role
+from altus.tui.app import AltusApp
+from altus.tui.widgets.composer import Composer
+from altus.tui.widgets.message_list import MessageBubble
+from altus.tui.widgets.status_bar import StatusBar
 from tests.conftest import FakeProvider, default_events
-from wai.agent import unanswered_tool_uses
-from wai.config.models import Config
-from wai.core.errors import RateLimitError
-from wai.core.events import MessageEnd, MessageStart, ReasoningDelta, TextDelta, Usage
-from wai.core.types import ModelInfo, Role
-from wai.tui.app import WaiApp
-from wai.tui.widgets.composer import Composer
-from wai.tui.widgets.message_list import MessageBubble
-from wai.tui.widgets.status_bar import StatusBar
 
 
-def make_app(provider: FakeProvider | None = None) -> WaiApp:
+def make_app(provider: FakeProvider | None = None) -> AltusApp:
     config = Config()
     config.ui.stream_flush_ms = 10
-    return WaiApp(config=config, provider=provider or FakeProvider())
+    return AltusApp(config=config, provider=provider or FakeProvider())
 
 
 async def _send(pilot, text: str) -> None:
@@ -158,14 +158,14 @@ async def test_resume_loads_a_prior_session() -> None:
         await _settle(pilot)
         session_id = app.session.id
 
-    resumed = WaiApp(config=app.config, provider=FakeProvider(), resume=session_id)
+    resumed = AltusApp(config=app.config, provider=FakeProvider(), resume=session_id)
     async with resumed.run_test() as pilot:
         assert resumed.session.id == session_id
         assert len(pilot.app.screen.query(MessageBubble)) == 2
 
 
 async def test_resume_last_falls_back_when_missing() -> None:
-    app = WaiApp(config=Config(), provider=FakeProvider(), resume="does-not-exist")
+    app = AltusApp(config=Config(), provider=FakeProvider(), resume="does-not-exist")
     async with app.run_test():
         assert app.session.messages == []
 
@@ -229,7 +229,7 @@ async def test_ctrl_c_with_no_stream_exits() -> None:
 
 
 async def test_ctrl_p_opens_the_model_picker() -> None:
-    from wai.tui.widgets.model_picker import ModelPicker
+    from altus.tui.widgets.model_picker import ModelPicker
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -321,8 +321,8 @@ async def test_status_bar_state_renders_while_streaming() -> None:
 
 
 def _tool_events(call_id: str = "t1", name: str = "list_dir"):  # type: ignore[no-untyped-def]
-    from wai.core.events import ToolCallEnd, ToolCallStart
-    from wai.core.types import StopReason
+    from altus.core.events import ToolCallEnd, ToolCallStart
+    from altus.core.types import StopReason
 
     return [
         MessageStart(model="fake-1"),
@@ -348,7 +348,7 @@ class ToolThenTextProvider(FakeProvider):
 
 
 async def test_tool_calls_render_and_resolve() -> None:
-    from wai.tui.widgets.tool_call import ToolCallWidget
+    from altus.tui.widgets.tool_call import ToolCallWidget
 
     app = make_app(ToolThenTextProvider())
     async with app.run_test() as pilot:
@@ -377,7 +377,7 @@ async def test_tool_turn_persists_without_orphans() -> None:
 
 
 async def test_failing_tool_marks_the_widget() -> None:
-    from wai.tui.widgets.tool_call import ToolCallWidget
+    from altus.tui.widgets.tool_call import ToolCallWidget
 
     class BadTool(ToolThenTextProvider):
         async def stream(self, request):  # type: ignore[no-untyped-def]
@@ -407,7 +407,7 @@ async def test_provider_error_is_recorded_in_the_session() -> None:
 
 async def test_no_tools_flag_disables_them() -> None:
     provider = FakeProvider()
-    app = WaiApp(config=Config(), provider=provider, no_tools=True)
+    app = AltusApp(config=Config(), provider=provider, no_tools=True)
     async with app.run_test() as pilot:
         await _send(pilot, "hi")
         await _settle(pilot)
@@ -419,8 +419,8 @@ async def test_no_tools_flag_disables_them() -> None:
 
 
 def _write_events(call_id: str = "w1", **args: object):  # type: ignore[no-untyped-def]
-    from wai.core.events import ToolCallEnd, ToolCallStart
-    from wai.core.types import StopReason
+    from altus.core.events import ToolCallEnd, ToolCallStart
+    from altus.core.types import StopReason
 
     payload = {"path": "note.txt", "content": "hello\n", **args}
     return [
@@ -448,11 +448,11 @@ class WriteThenTextProvider(FakeProvider):
 def _app_in(tmp_path, provider, **kw):  # type: ignore[no-untyped-def]
     config = Config()
     config.ui.stream_flush_ms = 10
-    return WaiApp(config=config, provider=provider, workspace_root=str(tmp_path), **kw)
+    return AltusApp(config=config, provider=provider, workspace_root=str(tmp_path), **kw)
 
 
 async def test_write_prompts_and_approval_applies_it(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider())
     async with app.run_test() as pilot:
@@ -472,7 +472,7 @@ async def test_write_prompts_and_approval_applies_it(tmp_path) -> None:  # type:
 
 
 async def test_rejecting_the_prompt_writes_nothing(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider())
     async with app.run_test() as pilot:
@@ -489,7 +489,7 @@ async def test_rejecting_the_prompt_writes_nothing(tmp_path) -> None:  # type: i
 
 
 async def test_escape_rejects(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider())
     async with app.run_test() as pilot:
@@ -505,7 +505,7 @@ async def test_escape_rejects(tmp_path) -> None:  # type: ignore[no-untyped-def]
 
 
 async def test_auto_approve_skips_the_prompt(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider(), auto_approve=True)
     async with app.run_test() as pilot:
@@ -518,7 +518,7 @@ async def test_auto_approve_skips_the_prompt(tmp_path) -> None:  # type: ignore[
 
 async def test_always_allow_is_shown_in_the_status_bar(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A standing grant must never be invisible."""
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider())
     async with app.run_test() as pilot:
@@ -539,7 +539,7 @@ async def test_modal_focuses_reject_by_default(tmp_path) -> None:  # type: ignor
     """Enter should hit the safe option, not the destructive one."""
     from textual.widgets import Button
 
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     app = _app_in(tmp_path, WriteThenTextProvider())
     async with app.run_test() as pilot:
@@ -560,7 +560,7 @@ async def test_modal_focuses_reject_by_default(tmp_path) -> None:  # type: ignor
 
 def test_command_detection_ignores_paths() -> None:
     """`/etc/hosts` in a prompt is a path, not a command."""
-    from wai.tui.commands import is_command
+    from altus.tui.commands import is_command
 
     assert is_command("/help")
     assert is_command("/kube use AKS_QAM")
@@ -571,7 +571,7 @@ def test_command_detection_ignores_paths() -> None:
 
 
 def test_command_parsing_handles_quotes() -> None:
-    from wai.tui.commands import parse
+    from altus.tui.commands import parse
 
     assert parse("/kube add ~/my config") == ("kube", ["add", "~/my", "config"])
     assert parse('/kube add "~/my config"') == ("kube", ["add", "~/my config"])
@@ -605,7 +605,7 @@ async def test_help_lists_commands() -> None:
 
 async def test_provider_command_opens_an_interactive_picker() -> None:
     """A list you cannot act on is a dead end --- the old one just printed text."""
-    from wai.tui.widgets.provider_picker import ProviderPicker
+    from altus.tui.widgets.provider_picker import ProviderPicker
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -621,7 +621,7 @@ async def test_provider_command_opens_an_interactive_picker() -> None:
 
 async def test_providers_is_an_alias() -> None:
     """`/providers` was an unknown-command error, which is just annoying."""
-    from wai.tui.widgets.provider_picker import ProviderPicker
+    from altus.tui.widgets.provider_picker import ProviderPicker
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -637,11 +637,11 @@ async def test_providers_is_an_alias() -> None:
 
 
 async def test_choosing_a_configured_provider_switches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.config.secrets import CredentialStatus
-    from wai.tui.widgets.provider_picker import ProviderPicker
+    from altus.config.secrets import CredentialStatus
+    from altus.tui.widgets.provider_picker import ProviderPicker
 
     monkeypatch.setattr(
-        "wai.config.secrets.credential_status",
+        "altus.config.secrets.credential_status",
         lambda name: CredentialStatus(name, True, "env"),
     )
     app = make_app()
@@ -663,8 +663,8 @@ async def test_choosing_a_configured_provider_switches(monkeypatch) -> None:  # 
 
 async def test_choosing_an_unconfigured_provider_opens_setup(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The missing link: the list is the route to setting one up."""
-    from wai.tui.widgets.provider_picker import ProviderPicker
-    from wai.tui.widgets.setup import SetupWizard
+    from altus.tui.widgets.provider_picker import ProviderPicker
+    from altus.tui.widgets.setup import SetupWizard
 
     _no_credentials(monkeypatch)
     app = make_app()
@@ -750,7 +750,7 @@ async def test_model_command_switches_directly() -> None:
 
 
 async def test_key_command_opens_a_masked_prompt() -> None:
-    from wai.tui.widgets.key_prompt import KeyPrompt
+    from altus.tui.widgets.key_prompt import KeyPrompt
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -778,7 +778,7 @@ async def test_key_command_refuses_bedrock() -> None:
 
 
 def _notices(pilot) -> str:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.message_list import NoticeBubble
+    from altus.tui.widgets.message_list import NoticeBubble
 
     return "\n".join(n.text for n in pilot.app.screen.query(NoticeBubble))
 
@@ -787,8 +787,8 @@ def _notices(pilot) -> str:  # type: ignore[no-untyped-def]
 
 
 def _visual_events(call_id: str = "v1"):  # type: ignore[no-untyped-def]
-    from wai.core.events import ToolCallEnd, ToolCallStart
-    from wai.core.types import StopReason
+    from altus.core.events import ToolCallEnd, ToolCallStart
+    from altus.core.types import StopReason
 
     return [
         MessageStart(model="fake-1"),
@@ -820,8 +820,8 @@ class ChartTool:
     read_only = True
 
     async def run(self, args, ctx):  # type: ignore[no-untyped-def]
-        from wai.core.visuals import GraphEdge, GraphNode, ResourceGraph
-        from wai.tools.base import ToolOutcome
+        from altus.core.visuals import GraphEdge, GraphNode, ResourceGraph
+        from altus.tools.base import ToolOutcome
 
         graph = ResourceGraph(
             title="shop",
@@ -835,17 +835,17 @@ class ChartTool:
 
 
 def _charting_app(provider):  # type: ignore[no-untyped-def]
-    from wai.tools.registry import ToolRegistry
+    from altus.tools.registry import ToolRegistry
 
     config = Config()
     config.ui.stream_flush_ms = 10
-    app = WaiApp(config=config, provider=provider)
+    app = AltusApp(config=config, provider=provider)
     app.registry = ToolRegistry([ChartTool()])  # type: ignore[list-item]
     return app
 
 
 async def test_a_tool_visual_renders_inline() -> None:
-    from wai.tui.widgets.visuals import VisualPanel
+    from altus.tui.widgets.visuals import VisualPanel
 
     app = _charting_app(ChartingProvider())
     async with app.run_test() as pilot:
@@ -871,7 +871,7 @@ async def test_the_chart_is_not_sent_to_the_model() -> None:
 
 
 async def test_enter_expands_a_visual_full_screen() -> None:
-    from wai.tui.widgets.visuals import VisualPanel, VisualScreen
+    from altus.tui.widgets.visuals import VisualPanel, VisualScreen
 
     app = _charting_app(ChartingProvider())
     async with app.run_test() as pilot:
@@ -895,7 +895,7 @@ async def _open_modal(pilot, request):  # type: ignore[no-untyped-def]
     push_screen_wait needs a worker; a callback is the equivalent that a test
     can drive directly.
     """
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tui.widgets.approval import ApprovalModal
 
     captured: list[object] = []
     pilot.app.push_screen(ApprovalModal(request), callback=captured.append)
@@ -910,7 +910,7 @@ async def test_protected_target_demands_a_typed_confirmation() -> None:
     """A keypress is not enough for production; you must type the cluster name."""
     from textual.widgets import Button, Input
 
-    from wai.tools.approval import ApprovalRequest, Decision
+    from altus.tools.approval import ApprovalRequest, Decision
 
     request = ApprovalRequest(
         tool="k8s_delete",
@@ -944,7 +944,7 @@ async def test_protected_target_demands_a_typed_confirmation() -> None:
 async def test_protected_target_can_still_be_rejected_immediately() -> None:
     from textual.widgets import Button
 
-    from wai.tools.approval import ApprovalRequest, Decision
+    from altus.tools.approval import ApprovalRequest, Decision
 
     request = ApprovalRequest(
         tool="k8s_delete",
@@ -962,7 +962,7 @@ async def test_protected_target_can_still_be_rejected_immediately() -> None:
 
 
 async def test_unprotected_target_still_approves_on_a_keypress() -> None:
-    from wai.tools.approval import ApprovalRequest, Decision
+    from altus.tools.approval import ApprovalRequest, Decision
 
     request = ApprovalRequest(
         tool="k8s_scale",
@@ -983,13 +983,13 @@ async def test_unprotected_target_still_approves_on_a_keypress() -> None:
 
 
 def _suggest(pilot):  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.command_suggest import CommandSuggestions
+    from altus.tui.widgets.command_suggest import CommandSuggestions
 
     return pilot.app.screen.query_one(CommandSuggestions)
 
 
 async def _type(pilot, text: str):  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.composer import Composer
+    from altus.tui.widgets.composer import Composer
 
     composer = pilot.app.screen.query_one(Composer)
     composer.text = text
@@ -1010,7 +1010,7 @@ async def test_a_bare_slash_offers_every_command() -> None:
 
         # Every one of them, not just the first screenful. Adding a command
         # must not silently push another out of the list a bare slash shows.
-        from wai.tui.commands.builtin import build_registry
+        from altus.tui.commands.builtin import build_registry
 
         assert names == {command.name for command in build_registry().unique}
 
@@ -1133,10 +1133,10 @@ FAKE_MODELS = [
 
 
 def _no_credentials(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.config.secrets import CredentialStatus
+    from altus.config.secrets import CredentialStatus
 
     monkeypatch.setattr(
-        "wai.config.secrets.credential_status",
+        "altus.config.secrets.credential_status",
         lambda name: CredentialStatus(name, False, False),
     )
 
@@ -1144,7 +1144,7 @@ def _no_credentials(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 async def _reach_model_step(pilot, key: str = "sk-test"):  # type: ignore[no-untyped-def]
     from textual.widgets import Input
 
-    from wai.tui.widgets.setup import Step
+    from altus.tui.widgets.setup import Step
 
     wizard = pilot.app.screen
     await pilot.press("enter")  # accept the highlighted provider
@@ -1170,7 +1170,7 @@ async def test_wai_starts_with_nothing_configured(monkeypatch) -> None:  # type:
 
 
 async def test_first_run_opens_the_wizard_and_says_why(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.tui.widgets.setup import SetupWizard
+    from altus.tui.widgets.setup import SetupWizard
 
     _no_credentials(monkeypatch)
     app = make_app()
@@ -1187,7 +1187,7 @@ async def test_first_run_opens_the_wizard_and_says_why(monkeypatch) -> None:  # 
 
 async def test_escape_leaves_a_usable_app(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Skipping setup must not trap you in a modal."""
-    from wai.tui.widgets.setup import SetupWizard
+    from altus.tui.widgets.setup import SetupWizard
 
     _no_credentials(monkeypatch)
     app = make_app()
@@ -1209,11 +1209,11 @@ async def test_escape_leaves_a_usable_app(monkeypatch) -> None:  # type: ignore[
 async def test_wizard_stores_the_key_checks_it_and_lists_models(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import keyring
 
-    from wai.config.secrets import KEYRING_SERVICE
-    from wai.tui.widgets.setup import Step
+    from altus.config.secrets import KEYRING_SERVICE
+    from altus.tui.widgets.setup import Step
 
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.registry.live_models", _returning(FAKE_MODELS))
+    monkeypatch.setattr("altus.providers.registry.live_models", _returning(FAKE_MODELS))
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1231,15 +1231,15 @@ async def test_wizard_stores_the_key_checks_it_and_lists_models(monkeypatch) -> 
 
 async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Finding out on your first message is the failure mode this replaces."""
-    from wai.core.errors import AuthenticationError
-    from wai.tui.widgets.setup import Step
+    from altus.core.errors import AuthenticationError
+    from altus.tui.widgets.setup import Step
 
     _no_credentials(monkeypatch)
 
     async def rejecting(name, config, **kw):  # type: ignore[no-untyped-def]
         raise AuthenticationError("invalid x-api-key", provider=name)
 
-    monkeypatch.setattr("wai.providers.registry.live_models", rejecting)
+    monkeypatch.setattr("altus.providers.registry.live_models", rejecting)
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1253,7 +1253,7 @@ async def test_a_bad_key_fails_at_the_health_check_not_the_first_prompt(monkeypa
 
 async def test_finishing_sets_the_session_and_the_default_profile(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.registry.live_models", _returning(FAKE_MODELS))
+    monkeypatch.setattr("altus.providers.registry.live_models", _returning(FAKE_MODELS))
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1289,7 +1289,7 @@ async def test_unmatched_filter_requeries_the_provider(monkeypatch) -> None:  # 
         return FAKE_MODELS if len(calls) == 1 else later
 
     _no_credentials(monkeypatch)
-    monkeypatch.setattr("wai.providers.registry.live_models", growing)
+    monkeypatch.setattr("altus.providers.registry.live_models", growing)
     app = make_app()
     async with app.run_test() as pilot:
         for _ in range(40):
@@ -1319,11 +1319,11 @@ async def test_model_picker_filters_and_falls_through_to_the_provider(monkeypatc
     """Not in the catalog must not mean not available."""
     from textual.widgets import Input
 
-    from wai.config.secrets import CredentialStatus
-    from wai.tui.widgets.model_picker import ModelPicker
+    from altus.config.secrets import CredentialStatus
+    from altus.tui.widgets.model_picker import ModelPicker
 
     monkeypatch.setattr(
-        "wai.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
+        "altus.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
     )
     calls: list[str] = []
 
@@ -1331,7 +1331,7 @@ async def test_model_picker_filters_and_falls_through_to_the_provider(monkeypatc
         calls.append(name)
         return [ModelInfo(id="claude-unreleased-9", provider="anthropic")]
 
-    monkeypatch.setattr("wai.providers.registry.live_models", live)
+    monkeypatch.setattr("altus.providers.registry.live_models", live)
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1359,17 +1359,17 @@ async def test_model_picker_filters_and_falls_through_to_the_provider(monkeypatc
 async def test_model_picker_accepts_an_id_nothing_lists(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from textual.widgets import Input
 
-    from wai.config.secrets import CredentialStatus
-    from wai.tui.widgets.model_picker import ModelPicker
+    from altus.config.secrets import CredentialStatus
+    from altus.tui.widgets.model_picker import ModelPicker
 
     monkeypatch.setattr(
-        "wai.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
+        "altus.config.secrets.credential_status", lambda name: CredentialStatus(name, True, "env")
     )
 
     async def nothing(name, config, **kw):  # type: ignore[no-untyped-def]
         return []
 
-    monkeypatch.setattr("wai.providers.registry.live_models", nothing)
+    monkeypatch.setattr("altus.providers.registry.live_models", nothing)
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1395,7 +1395,7 @@ async def test_model_picker_accepts_an_id_nothing_lists(monkeypatch) -> None:  #
 async def test_model_picker_says_so_when_there_is_no_key(monkeypatch) -> None:
     from textual.widgets import Input, Label
 
-    from wai.tui.widgets.model_picker import ModelPicker
+    from altus.tui.widgets.model_picker import ModelPicker
 
     _no_credentials(monkeypatch)
     app = make_app()
@@ -1427,7 +1427,7 @@ def test_every_command_written_is_a_command_reachable() -> None:
     """
     import inspect
 
-    from wai.tui.commands import builtin
+    from altus.tui.commands import builtin
 
     written = {
         name.removeprefix("cmd_")
@@ -1459,7 +1459,7 @@ async def test_profile_command_is_reachable_from_the_app() -> None:
 
 
 def _graph_visual():  # type: ignore[no-untyped-def]
-    from wai.core.visuals import GraphEdge, GraphNode, ResourceGraph
+    from altus.core.visuals import GraphEdge, GraphNode, ResourceGraph
 
     web = GraphNode(id="apps/v1/Deployment/shop/web", kind="Deployment", name="web", status="2/2")
     pod = GraphNode(id="v1/Pod/shop/web-1", kind="Pod", name="web-1", status="Running")
@@ -1508,8 +1508,8 @@ def pretend_terminal(monkeypatch, env: dict[str, str]) -> None:  # type: ignore[
 def test_graphics_off_gives_exactly_the_view_it_always_gave(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Nothing about the text path may change. It is what CI, a pipe and a
     dumb terminal get, and it is the floor everything else falls back to."""
-    from wai.core.visuals import Bars
-    from wai.tui.widgets.visuals import BarsView, build_text_view, build_view
+    from altus.core.visuals import Bars
+    from altus.tui.widgets.visuals import BarsView, build_text_view, build_view
 
     model = Bars(title="cpu", bars=[])
     assert isinstance(build_view(model, setting="off"), BarsView)
@@ -1520,7 +1520,7 @@ def test_a_terminal_without_graphics_still_draws_a_topology(monkeypatch) -> None
     """Terminal.app cannot show an image, but it can show a map --- and that
     is the whole reason the cell back end exists."""
     pretend_terminal(monkeypatch, APPLE)
-    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+    from altus.tui.widgets.graphics import CellMap, GraphicsPanel
 
     panel = GraphicsPanel(_graph_visual(), setting="auto")
     assert panel.support.value == "cells"
@@ -1532,8 +1532,8 @@ def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # t
     """A bar chart as box characters is worse than the text rendering, which
     was written for exactly this width and says the numbers out loud."""
     pretend_terminal(monkeypatch, APPLE)
-    from wai.core.visuals import Bar, Bars
-    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+    from altus.core.visuals import Bar, Bars
+    from altus.tui.widgets.graphics import CellMap, GraphicsPanel
 
     panel = GraphicsPanel(Bars(title="cpu", bars=[Bar(label="a", value=1)]), setting="auto")
     assert not any(isinstance(child, CellMap) for child in panel.compose())
@@ -1541,7 +1541,7 @@ def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # t
 
 def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     pretend_terminal(monkeypatch, KITTY)
-    from wai.tui.widgets.graphics import GraphicsPanel, ImageMap
+    from altus.tui.widgets.graphics import GraphicsPanel, ImageMap
 
     panel = GraphicsPanel(_graph_visual(), setting="auto")
     assert panel.support.value == "image"
@@ -1550,9 +1550,9 @@ def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore
 
 def test_a_visual_we_do_not_draw_falls_through_whatever_the_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     pretend_terminal(monkeypatch, KITTY)
-    from wai.core.visuals import Table
-    from wai.tui.widgets.graphics import GraphicsPanel
-    from wai.tui.widgets.visuals import TableView
+    from altus.core.visuals import Table
+    from altus.tui.widgets.graphics import GraphicsPanel
+    from altus.tui.widgets.visuals import TableView
 
     panel = GraphicsPanel(Table(columns=["a"], rows=[["b"]]), setting="auto")
     assert any(isinstance(child, TableView) for child in panel.compose())
@@ -1563,8 +1563,8 @@ async def test_the_cell_map_renders_without_a_graphics_terminal(monkeypatch) -> 
     pretend_terminal(monkeypatch, APPLE)
     from textual.app import App, ComposeResult
 
-    from wai.render import DARK
-    from wai.tui.widgets.graphics import CellMap
+    from altus.render import DARK
+    from altus.tui.widgets.graphics import CellMap
 
     class Harness(App[None]):
         def compose(self) -> ComposeResult:
@@ -1582,8 +1582,8 @@ async def test_clicking_a_node_in_the_cell_map_reports_it(monkeypatch) -> None: 
     pretend_terminal(monkeypatch, APPLE)
     from textual.app import App, ComposeResult
 
-    from wai.render import DARK
-    from wai.tui.widgets.graphics import CellMap, NodeSelected
+    from altus.render import DARK
+    from altus.tui.widgets.graphics import CellMap, NodeSelected
 
     seen: list[str] = []
 
@@ -1629,8 +1629,8 @@ async def test_clicking_a_node_opens_the_object(monkeypatch) -> None:  # type: i
     """Drill-down is the whole point of the hit map. It reaches k8s_get and
     nothing else, so no approval is ever involved."""
     pretend_terminal(monkeypatch, APPLE)
-    from wai.tui.screens.detail import NodeDetail
-    from wai.tui.widgets.graphics import CellMap, GraphicsPanel, NodeSelected
+    from altus.tui.screens.detail import NodeDetail
+    from altus.tui.widgets.graphics import CellMap, GraphicsPanel, NodeSelected
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1646,7 +1646,7 @@ async def test_clicking_a_node_opens_the_object(monkeypatch) -> None:  # type: i
 async def test_the_detail_screen_reports_an_unparseable_identity() -> None:
     from textual.widgets import Static
 
-    from wai.tui.screens.detail import NodeDetail
+    from altus.tui.screens.detail import NodeDetail
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1661,8 +1661,8 @@ async def test_the_detail_screen_reports_an_unparseable_identity() -> None:
 async def test_the_detail_screen_says_so_when_kubernetes_is_absent() -> None:
     from textual.widgets import Static
 
-    from wai.tools import ToolRegistry
-    from wai.tui.screens.detail import NodeDetail
+    from altus.tools import ToolRegistry
+    from altus.tui.screens.detail import NodeDetail
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1679,10 +1679,10 @@ async def test_zoom_and_pan_re_render_rather_than_scale(monkeypatch) -> None:  #
     """Re-rendering is why text stays sharp zoomed in. Scaling a bitmap would
     blur exactly the labels the map exists to show."""
     pretend_terminal(monkeypatch, KITTY)
-    from wai.render import View
-    from wai.tui.widgets.graphics import ImageMap
+    from altus.render import View
+    from altus.tui.widgets.graphics import ImageMap
 
-    widget = ImageMap(_graph_visual(), __import__("wai.render", fromlist=["DARK"]).DARK)
+    widget = ImageMap(_graph_visual(), __import__("altus.render", fromlist=["DARK"]).DARK)
     assert widget.view == View()
 
     widget.view = widget.view.zoomed(1.25)
@@ -1703,12 +1703,12 @@ def _k8s_registry(objects=None):  # type: ignore[no-untyped-def]
     """A registry whose k8s tools answer from recorded payloads."""
     from pathlib import Path
 
+    from altus.cloud.base import ProtectionRules
+    from altus.tools import ToolRegistry
+    from altus.tools.base import CloudContext, ToolContext
+    from altus.tools.k8s import k8s_tools
+    from altus.workspace import Workspace
     from tests.test_k8s import CLUSTER, FakeClient, FakeProvider
-    from wai.cloud.base import ProtectionRules
-    from wai.tools import ToolRegistry
-    from wai.tools.base import CloudContext, ToolContext
-    from wai.tools.k8s import k8s_tools
-    from wai.workspace import Workspace
 
     client = FakeClient(objects if objects is not None else CLUSTER)
     registry = ToolRegistry(k8s_tools())
@@ -1723,7 +1723,7 @@ async def test_the_dashboard_populates_itself(monkeypatch) -> None:  # type: ign
     """Waiting for the agent to call the right four tools would leave the
     screen blank on open, which is not a dashboard."""
     pretend_terminal(monkeypatch, APPLE)
-    from wai.tui.screens.dashboard import PANELS, DashboardScreen, Panel
+    from altus.tui.screens.dashboard import PANELS, DashboardScreen, Panel
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1741,8 +1741,8 @@ async def test_the_dashboard_populates_itself(monkeypatch) -> None:  # type: ign
 async def test_every_dashboard_panel_is_a_read() -> None:
     """The dashboard runs tools on open without asking. That is only
     acceptable because none of them can change anything."""
-    from wai.tools.k8s import k8s_tools
-    from wai.tui.screens.dashboard import PANELS
+    from altus.tools.k8s import k8s_tools
+    from altus.tui.screens.dashboard import PANELS
 
     by_name = {tool.name: tool for tool in k8s_tools()}
     for _title, name, _args in PANELS:
@@ -1752,8 +1752,8 @@ async def test_every_dashboard_panel_is_a_read() -> None:
 async def test_a_failing_panel_does_not_blank_the_others(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """RBAC often permits some reads and not others."""
     pretend_terminal(monkeypatch, APPLE)
+    from altus.tui.screens.dashboard import DashboardScreen, Panel
     from tests.test_k8s import CLUSTER
-    from wai.tui.screens.dashboard import DashboardScreen, Panel
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1785,7 +1785,7 @@ async def test_changing_the_namespace_reloads(monkeypatch) -> None:  # type: ign
     pretend_terminal(monkeypatch, APPLE)
     from textual.widgets import Input
 
-    from wai.tui.screens.dashboard import DashboardScreen
+    from altus.tui.screens.dashboard import DashboardScreen
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1804,7 +1804,7 @@ async def test_changing_the_namespace_reloads(monkeypatch) -> None:  # type: ign
 
 
 async def test_dashboard_command_refuses_without_kubernetes() -> None:
-    from wai.tools import ToolRegistry
+    from altus.tools import ToolRegistry
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1817,7 +1817,7 @@ async def test_dashboard_command_refuses_without_kubernetes() -> None:
 
 async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     pretend_terminal(monkeypatch, APPLE)
-    from wai.tui.screens.dashboard import DashboardScreen
+    from altus.tui.screens.dashboard import DashboardScreen
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1830,10 +1830,10 @@ async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type:
 
 
 async def test_aws_command_reports_identity(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.cloud.auth import CloudStatus
+    from altus.cloud.auth import CloudStatus
 
     monkeypatch.setattr(
-        "wai.cloud.auth.status",
+        "altus.cloud.auth.status",
         lambda *a, **kw: CloudStatus("aws", True, True, source="env", detail="profile dev"),
     )
 
@@ -1860,7 +1860,7 @@ async def test_aws_command_reports_identity(monkeypatch) -> None:  # type: ignor
 
 
 async def test_dashboard_refuses_aws_without_the_tools() -> None:
-    from wai.tools import ToolRegistry
+    from altus.tools import ToolRegistry
 
     app = make_app()
     async with app.run_test() as pilot:
@@ -1873,7 +1873,7 @@ async def test_dashboard_refuses_aws_without_the_tools() -> None:
 
 async def test_the_aws_dashboard_uses_the_aws_panels(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     pretend_terminal(monkeypatch, APPLE)
-    from wai.tui.screens.dashboard import AWS_PANELS, DashboardScreen, Panel
+    from altus.tui.screens.dashboard import AWS_PANELS, DashboardScreen, Panel
 
     app = make_app()
     async with app.run_test() as pilot:

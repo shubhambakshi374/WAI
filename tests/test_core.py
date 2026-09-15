@@ -4,12 +4,11 @@ import time
 
 import pytest
 
-from tests.conftest import FakeProvider, default_events
-from wai.core.errors import RateLimitError, TransientProviderError, WaiError
-from wai.core.events import MessageEnd, StreamError, TextDelta
-from wai.core.retry import backoff_delay, retry_stream
-from wai.core.session import Session
-from wai.core.types import (
+from altus.core.errors import AltusError, RateLimitError, TransientProviderError
+from altus.core.events import MessageEnd, StreamError, TextDelta
+from altus.core.retry import backoff_delay, retry_stream
+from altus.core.session import Session
+from altus.core.types import (
     Message,
     ReasoningBlock,
     Role,
@@ -19,7 +18,8 @@ from wai.core.types import (
     Usage,
     new_id,
 )
-from wai.runner import TurnAccumulator, run_turn
+from altus.runner import TurnAccumulator, run_turn
+from tests.conftest import FakeProvider, default_events
 
 
 def test_message_text_excludes_reasoning_and_tools() -> None:
@@ -142,9 +142,9 @@ async def test_retry_stream_does_not_retry_after_output() -> None:
 
 async def test_retry_stream_gives_up_on_non_retryable() -> None:
     async def factory():
-        raise WaiError("nope")
+        raise AltusError("nope")
         yield  # pragma: no cover
 
-    with pytest.raises(WaiError):
+    with pytest.raises(AltusError):
         async for _ in retry_stream(factory, base=0.0):
             pass

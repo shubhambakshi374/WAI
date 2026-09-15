@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from wai.cloud.base import Sensitivity
-from wai.tools import ToolContext, default_registry
-from wai.tools.approval import (
+from altus.cloud.base import Sensitivity
+from altus.tools import ToolContext, default_registry
+from altus.tools.approval import (
     AllowAll,
     ApprovalRequest,
     Decision,
@@ -21,7 +21,7 @@ from wai.tools.approval import (
     RecordingPolicy,
     SessionApprovals,
 )
-from wai.workspace import Workspace
+from altus.workspace import Workspace
 
 
 @pytest.fixture
@@ -454,7 +454,7 @@ async def _commit_all(path: Path) -> None:
 
 
 async def test_recoverability_reports_committed_files(tmp_path: Path) -> None:
-    from wai.tools._git import MODIFIED, RECOVERABLE, UNTRACKED, recoverability
+    from altus.tools._git import MODIFIED, RECOVERABLE, UNTRACKED, recoverability
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -472,7 +472,7 @@ async def test_recoverability_reports_committed_files(tmp_path: Path) -> None:
 
 
 async def test_recoverability_outside_a_repo(tmp_path: Path) -> None:
-    from wai.tools._git import NO_REPO, recoverability
+    from altus.tools._git import NO_REPO, recoverability
 
     loose = tmp_path / "loose"
     loose.mkdir()
@@ -482,7 +482,7 @@ async def test_recoverability_outside_a_repo(tmp_path: Path) -> None:
 
 async def test_delete_approval_states_recoverability(registry, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     """The one fact that makes a delete decision informed."""
-    from wai.tools._git import UNTRACKED
+    from altus.tools._git import UNTRACKED
 
     repo = tmp_path / "r"
     repo.mkdir()

@@ -11,11 +11,11 @@ from typing import Any
 
 import pytest
 
-from wai.config.models import Config, Profile
-from wai.core.types import ModelInfo
-from wai.providers import discovery
-from wai.providers.local import LocalProvider, configured_endpoints, ollama_root
-from wai.providers.registry import create_provider
+from altus.config.models import Config, Profile
+from altus.core.types import ModelInfo
+from altus.providers import discovery
+from altus.providers.local import LocalProvider, configured_endpoints, ollama_root
+from altus.providers.registry import create_provider
 
 
 class FakeResponse:
@@ -185,7 +185,7 @@ class FakeModels:
 def local_provider(
     monkeypatch: pytest.MonkeyPatch, ids: list[str], routes: dict[str, FakeResponse]
 ):  # type: ignore[no-untyped-def]
-    from wai.config.models import ProviderSettings
+    from altus.config.models import ProviderSettings
 
     wire(monkeypatch, routes)
     provider = LocalProvider(
@@ -237,7 +237,7 @@ def test_ollama_root_strips_the_openai_suffix() -> None:
 
 
 def test_a_local_provider_without_an_endpoint_says_which_field(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.core.errors import ConfigError
+    from altus.core.errors import ConfigError
 
     provider = create_provider("local", Config())
     with pytest.raises(ConfigError, match="base_url"):
@@ -262,11 +262,11 @@ def test_local_never_reads_the_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     """A self-hosted endpoint has no business in the OS keychain."""
     import keyring
 
-    from wai.config.secrets import get_api_key
+    from altus.config.secrets import get_api_key
 
-    keyring.set_password("wai", "local", "should-not-be-used")
+    keyring.set_password("altus", "local", "should-not-be-used")
     assert get_api_key("local") is None
-    monkeypatch.setenv("WAI_LOCAL_API_KEY", "explicit")
+    monkeypatch.setenv("ALTUS_LOCAL_API_KEY", "explicit")
     assert get_api_key("local") == "explicit"
 
 
@@ -286,7 +286,7 @@ def test_configured_endpoints_reads_profiles() -> None:
 
 
 def test_endpoint_survives_a_config_round_trip() -> None:
-    from wai.config.loader import load_config, save_config
+    from altus.config.loader import load_config, save_config
 
     config = Config()
     config.profiles["laptop"] = Profile(
@@ -307,9 +307,9 @@ def test_endpoint_survives_a_config_round_trip() -> None:
 
 
 def test_a_model_without_tools_gets_none_declared() -> None:
-    from wai.agent import build_system_prompt
-    from wai.core.session import Session
-    from wai.tools import default_registry
+    from altus.agent import build_system_prompt
+    from altus.core.session import Session
+    from altus.tools import default_registry
 
     registry = default_registry(kubernetes=False)
     capable = Session(provider="local", model="qwen3", workspace_root="/w")
@@ -324,12 +324,12 @@ def test_a_model_without_tools_gets_none_declared() -> None:
 
 
 async def test_the_loop_declares_no_tools_for_an_incapable_model(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from altus.agent import run_agent
+    from altus.core.session import Session
+    from altus.core.types import Message
+    from altus.tools import ToolContext, default_registry
+    from altus.workspace import Workspace
     from tests.test_agent import ScriptedProvider, text_turn
-    from wai.agent import run_agent
-    from wai.core.session import Session
-    from wai.core.types import Message
-    from wai.tools import ToolContext, default_registry
-    from wai.workspace import Workspace
 
     session = Session(
         provider="local", model="tiny", workspace_root=str(tmp_path), model_supports_tools=False
@@ -343,9 +343,9 @@ async def test_the_loop_declares_no_tools_for_an_incapable_model(tmp_path) -> No
 
 
 def test_session_remembers_the_endpoint_and_capability() -> None:
-    from wai.config.loader import sessions_dir
-    from wai.core.session import Session
-    from wai.storage.sessions import SessionStore
+    from altus.config.loader import sessions_dir
+    from altus.core.session import Session
+    from altus.storage.sessions import SessionStore
 
     store = SessionStore(sessions_dir())
     session = Session(
@@ -390,7 +390,7 @@ def test_model_info_carries_capability_by_default() -> None:
 def test_local_is_not_ready_until_an_endpoint_exists() -> None:
     """Reporting `local` as configured out of the box suppressed the first-run
     wizard entirely --- there is no key to find, so readiness is a profile."""
-    from wai.config.secrets import credential_status
+    from altus.config.secrets import credential_status
 
     status = credential_status("local")
     assert status.available is False
@@ -398,8 +398,8 @@ def test_local_is_not_ready_until_an_endpoint_exists() -> None:
 
 
 async def test_first_run_still_opens_the_wizard_with_local_present(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from altus.tui.widgets.setup import SetupWizard
     from tests.test_tui import _no_credentials, make_app
-    from wai.tui.widgets.setup import SetupWizard
 
     _no_credentials(monkeypatch)
     app = make_app()

@@ -7,17 +7,17 @@ from typing import ClassVar
 
 import pytest
 
-from wai.config.models import Config, ProviderSettings
-from wai.core.events import MessageEnd, MessageStart, StreamEvent, TextDelta, UsageUpdate
-from wai.core.types import ChatRequest, ModelInfo, Usage
-from wai.providers.base import BaseProvider, ProviderCapabilities
+from altus.config.models import Config, ProviderSettings
+from altus.core.events import MessageEnd, MessageStart, StreamEvent, TextDelta, UsageUpdate
+from altus.core.types import ChatRequest, ModelInfo, Usage
+from altus.providers.base import BaseProvider, ProviderCapabilities
 
 
 @pytest.fixture(autouse=True)
 def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Never read or write the developer's real config, data or keyring."""
-    monkeypatch.setenv("WAI_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("WAI_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("ALTUS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALTUS_DATA_DIR", str(tmp_path / "data"))
     for key in list(os.environ):
         if key.endswith("_API_KEY"):
             monkeypatch.delenv(key, raising=False)
@@ -31,7 +31,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(keyring, "get_password", lambda s, u: vault.get((s, u)))
     monkeypatch.setattr(keyring, "set_password", lambda s, u, p: vault.__setitem__((s, u), p))
     monkeypatch.setattr(keyring, "delete_password", lambda s, u: vault.pop((s, u), None))
-    monkeypatch.setattr("wai.config.secrets._keyring_get", lambda _provider: None)
+    monkeypatch.setattr("altus.config.secrets._keyring_get", lambda _provider: None)
     # Bedrock authenticates through the AWS chain, and botocore reads ~/.aws
     # and AWS_* itself --- outside everything patched above. A developer with
     # working AWS credentials therefore had one provider configured and CI had

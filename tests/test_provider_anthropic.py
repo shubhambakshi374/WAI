@@ -6,9 +6,8 @@ from typing import Any
 
 import pytest
 
-from tests.fixtures import anthropic_raw as raw
-from wai.config.models import ProviderSettings
-from wai.core.events import (
+from altus.config.models import ProviderSettings
+from altus.core.events import (
     MessageEnd,
     MessageStart,
     ReasoningDelta,
@@ -18,7 +17,7 @@ from wai.core.events import (
     ToolCallStart,
     UsageUpdate,
 )
-from wai.core.types import (
+from altus.core.types import (
     ChatRequest,
     ImageBlock,
     Message,
@@ -29,7 +28,8 @@ from wai.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from wai.providers.anthropic import AnthropicProvider, _to_anthropic_message
+from altus.providers.anthropic import AnthropicProvider, _to_anthropic_message
+from tests.fixtures import anthropic_raw as raw
 
 
 class _FakeMessages:

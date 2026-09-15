@@ -13,14 +13,14 @@ from typing import Any
 
 import pytest
 
-from wai.cloud.base import ProtectionRules, Sensitivity
-from wai.cloud.redact import MARKER
-from wai.config.models import AwsSettings, CloudSettings
-from wai.tools import default_registry
-from wai.tools.approval import Decision, RecordingPolicy
-from wai.tools.aws import aws_tools
-from wai.tools.base import CloudContext, ToolContext
-from wai.workspace import Workspace
+from altus.cloud.base import ProtectionRules, Sensitivity
+from altus.cloud.redact import MARKER
+from altus.config.models import AwsSettings, CloudSettings
+from altus.tools import default_registry
+from altus.tools.approval import Decision, RecordingPolicy
+from altus.tools.aws import aws_tools
+from altus.tools.base import CloudContext, ToolContext
+from altus.workspace import Workspace
 
 IDENTITY = {
     "account": "123456789012",
@@ -67,7 +67,7 @@ class FakeProvider:
 
 
 def tool(name: str) -> Any:
-    from wai.tools.aws import aws_tools as build
+    from altus.tools.aws import aws_tools as build
 
     return next(t for t in build() if t.name == name)
 
@@ -125,7 +125,7 @@ async def test_every_tool_says_so_when_there_is_no_session() -> None:
 def test_explain_reads_the_real_service_model() -> None:
     """Not a fixture: botocore ships the models, so this is the contract the
     SDK will actually enforce."""
-    from wai.cloud import aws as aws_api
+    from altus.cloud import aws as aws_api
 
     described = aws_api.describe_operation("ec2", "DescribeInstances")
     assert described["sensitivity"] == "read"
@@ -392,7 +392,7 @@ async def test_topology_nodes_know_which_tool_opens_them() -> None:
 
 
 async def test_topology_identities_split_the_way_drill_down_expects() -> None:
-    from wai.cloud.k8s import split_node_id
+    from altus.cloud.k8s import split_node_id
 
     provider = FakeProvider(VPC_REGION)
     out = await tool("aws_topology").run({}, context(provider))
@@ -729,7 +729,7 @@ def test_only_the_write_tool_is_mutating() -> None:
 
 
 def cli_tool() -> Any:
-    from wai.tools.cli import AwsCliTool
+    from altus.tools.cli import AwsCliTool
 
     return AwsCliTool()
 
@@ -750,7 +750,7 @@ def test_the_cli_and_the_sdk_agree(argv: list[str], service: str, operation: str
     """Two answers for terminate-instances depending on which door it came
     through is exactly the gap a gate is supposed not to have. The CLI asks the
     same classifier rather than keeping a second table to drift from."""
-    from wai.cloud.aws import classify
+    from altus.cloud.aws import classify
 
     assert cli_tool().classify(argv) is classify(service, operation)
 
@@ -762,7 +762,7 @@ def test_a_bare_aws_invocation_is_treated_as_a_change() -> None:
 def test_the_model_cannot_retarget_the_aws_cli() -> None:
     """--profile and --region would send the command at another account, and
     the approval prompt would then name the wrong blast radius."""
-    from wai.tools.cli import RESERVED_FLAGS
+    from altus.tools.cli import RESERVED_FLAGS
 
     for flag in ("--profile", "--region", "--endpoint-url"):
         assert flag in RESERVED_FLAGS
@@ -774,7 +774,7 @@ def test_the_model_cannot_retarget_the_aws_cli() -> None:
 def test_every_aws_dashboard_panel_is_a_read() -> None:
     """The dashboard runs these on open without asking, which is only
     acceptable because none of them can change anything."""
-    from wai.tui.screens.dashboard import AWS_PANELS
+    from altus.tui.screens.dashboard import AWS_PANELS
 
     by_name = {t.name: t for t in aws_tools()}
     for _title, name, _args in AWS_PANELS:
@@ -783,6 +783,6 @@ def test_every_aws_dashboard_panel_is_a_read() -> None:
 
 def test_cost_explorer_is_not_on_a_refreshing_screen() -> None:
     """It bills per request, and `r` is one keypress."""
-    from wai.tui.screens.dashboard import AWS_PANELS
+    from altus.tui.screens.dashboard import AWS_PANELS
 
     assert "aws_cost" not in {name for _t, name, _a in AWS_PANELS}

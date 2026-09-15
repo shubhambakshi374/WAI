@@ -9,13 +9,13 @@ from typing import Any, ClassVar
 
 import pytest
 
-from wai.agent import (
+from altus.agent import (
     build_system_prompt,
     run_agent,
     unanswered_tool_uses,
 )
-from wai.config.models import ProviderSettings
-from wai.core.events import (
+from altus.config.models import ProviderSettings
+from altus.core.events import (
     IterationEnd,
     MessageEnd,
     MessageStart,
@@ -24,8 +24,8 @@ from wai.core.events import (
     ToolFinished,
     ToolStarted,
 )
-from wai.core.session import Session
-from wai.core.types import (
+from altus.core.session import Session
+from altus.core.types import (
     ChatRequest,
     Message,
     Role,
@@ -33,9 +33,9 @@ from wai.core.types import (
     ToolResultBlock,
     Usage,
 )
-from wai.providers.base import BaseProvider, ProviderCapabilities
-from wai.tools import ToolContext, default_registry
-from wai.workspace import Workspace
+from altus.providers.base import BaseProvider, ProviderCapabilities
+from altus.tools import ToolContext, default_registry
+from altus.workspace import Workspace
 
 
 class ScriptedProvider(BaseProvider):
@@ -58,7 +58,7 @@ class ScriptedProvider(BaseProvider):
 
 def tool_turn(*calls: tuple[str, str, dict[str, Any]]) -> list[StreamEvent]:
     """A turn whose stop reason is TOOL_USE, requesting the given calls."""
-    from wai.core.events import ToolCallEnd, ToolCallStart
+    from altus.core.events import ToolCallEnd, ToolCallStart
 
     events: list[StreamEvent] = [MessageStart(model="scripted")]
     for i, (call_id, name, args) in enumerate(calls):
@@ -273,7 +273,7 @@ async def test_cancelling_during_tool_execution_leaves_no_orphan(session, regist
         async def run(self, args, c):  # type: ignore[no-untyped-def]
             await asyncio.Event().wait()
 
-    from wai.tools.registry import ToolRegistry
+    from altus.tools.registry import ToolRegistry
 
     slow_registry = ToolRegistry([Slow()])  # type: ignore[list-item]
     task = asyncio.create_task(drive(provider, session, slow_registry, ctx))
@@ -290,7 +290,7 @@ async def test_cancelling_during_tool_execution_leaves_no_orphan(session, regist
 
 async def test_cancelling_during_streaming_leaves_no_orphan(session, registry, ctx) -> None:  # type: ignore[no-untyped-def]
     """Same invariant when the cancel lands mid-stream, after a tool_use arrived."""
-    from wai.core.events import ToolCallEnd, ToolCallStart
+    from altus.core.events import ToolCallEnd, ToolCallStart
 
     class Hanging(ScriptedProvider):
         async def stream(self, request):  # type: ignore[no-untyped-def]
@@ -311,7 +311,7 @@ async def test_cancelling_during_streaming_leaves_no_orphan(session, registry, c
 
 async def test_cancelled_session_survives_anthropic_translation(session, registry, ctx) -> None:  # type: ignore[no-untyped-def]
     """End-to-end proof: the cancelled session is still a valid conversation."""
-    from wai.providers.anthropic import _to_anthropic_message
+    from altus.providers.anthropic import _to_anthropic_message
 
     provider = ScriptedProvider([tool_turn(("t1", "list_dir", {})), text_turn()])
     await drive(provider, session, registry, ctx)
@@ -337,7 +337,7 @@ def test_system_prompt_names_the_workspace_and_tools(session, registry) -> None:
 def test_system_prompt_does_not_claim_read_only_when_it_can_write(session) -> None:  # type: ignore[no-untyped-def]
     """Saying "read-only" while write_file is declared made the model refuse
     edits it could make, and report access it did have as missing."""
-    from wai.tools.registry import default_registry
+    from altus.tools.registry import default_registry
 
     prompt = build_system_prompt(session, default_registry(writes=True, kubernetes=False))
     assert prompt is not None
@@ -347,7 +347,7 @@ def test_system_prompt_does_not_claim_read_only_when_it_can_write(session) -> No
 
 
 def test_system_prompt_still_says_read_only_without_write_tools(session) -> None:  # type: ignore[no-untyped-def]
-    from wai.tools.registry import default_registry
+    from altus.tools.registry import default_registry
 
     prompt = build_system_prompt(session, default_registry(writes=False, kubernetes=False))
     assert prompt is not None
@@ -379,8 +379,8 @@ async def test_disabling_tools_declares_none(session, registry, ctx) -> None:  #
 
 async def test_reasoning_blocks_survive_between_iterations(session, registry, ctx) -> None:  # type: ignore[no-untyped-def]
     """Providers that verify thinking signatures need them echoed back verbatim."""
-    from wai.core.events import ReasoningDelta
-    from wai.core.types import ReasoningBlock
+    from altus.core.events import ReasoningDelta
+    from altus.core.types import ReasoningBlock
 
     turn = tool_turn(("t1", "list_dir", {}))
     turn.insert(1, ReasoningDelta(text="let me look"))

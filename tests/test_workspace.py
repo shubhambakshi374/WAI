@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from wai.core.errors import PathNotAllowed
-from wai.workspace import Workspace, default_workspace
+from altus.core.errors import PathNotAllowed
+from altus.workspace import Workspace, default_workspace
 
 
 @pytest.fixture

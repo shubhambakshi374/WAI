@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from wai.config.loader import load_config
-from wai.config.secrets import credential_status
-from wai.core.events import MessageEnd, TextDelta
-from wai.core.types import ChatRequest, Message
-from wai.providers import create_provider
-from wai.providers.registry import catalog_for
+from altus.config.loader import load_config
+from altus.config.secrets import credential_status
+from altus.core.events import MessageEnd, TextDelta
+from altus.core.types import ChatRequest, Message
+from altus.providers import create_provider
+from altus.providers.registry import catalog_for
 
 pytestmark = pytest.mark.live
 
@@ -38,8 +38,8 @@ LIVE_MODELS = {
 @pytest.fixture(autouse=True)
 def real_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Live tests need the developer's real credentials, unlike every other test."""
-    monkeypatch.delenv("WAI_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("WAI_DATA_DIR", raising=False)
+    monkeypatch.delenv("ALTUS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("ALTUS_DATA_DIR", raising=False)
 
 
 @pytest.mark.parametrize("provider_name", sorted(LIVE_MODELS))

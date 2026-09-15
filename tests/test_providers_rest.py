@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from wai.config.models import ProviderSettings
-from wai.core.errors import ConfigError
-from wai.core.events import (
+from altus.config.models import ProviderSettings
+from altus.core.errors import ConfigError
+from altus.core.events import (
     MessageEnd,
     ReasoningDelta,
     TextDelta,
@@ -18,7 +18,7 @@ from wai.core.events import (
     ToolCallStart,
     UsageUpdate,
 )
-from wai.core.types import (
+from altus.core.types import (
     ChatRequest,
     ImageBlock,
     Message,
@@ -29,13 +29,13 @@ from wai.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from wai.providers.azure_foundry import AzureFoundryProvider
-from wai.providers.bedrock import BedrockProvider, _to_converse_messages
-from wai.providers.deepseek import DeepSeekProvider
-from wai.providers.gemini import GeminiProvider, _to_contents
-from wai.providers.mistral import MistralProvider, _to_mistral_messages
-from wai.providers.openai import OpenAIProvider, _to_openai_messages
-from wai.providers.openrouter import OpenRouterProvider
+from altus.providers.azure_foundry import AzureFoundryProvider
+from altus.providers.bedrock import BedrockProvider, _to_converse_messages
+from altus.providers.deepseek import DeepSeekProvider
+from altus.providers.gemini import GeminiProvider, _to_contents
+from altus.providers.mistral import MistralProvider, _to_mistral_messages
+from altus.providers.openai import OpenAIProvider, _to_openai_messages
+from altus.providers.openrouter import OpenRouterProvider
 
 
 class _AsyncList:
@@ -476,7 +476,7 @@ async def test_bedrock_tool_use(bedrock_provider: BedrockProvider) -> None:
 
 
 async def test_bedrock_mid_stream_exception_is_raised(bedrock_provider: BedrockProvider) -> None:
-    from wai.core.errors import RateLimitError
+    from altus.core.errors import RateLimitError
 
     _wire_bedrock(bedrock_provider, [{"throttlingException": {"message": "slow down"}}])
     with pytest.raises(RateLimitError):
@@ -521,7 +521,7 @@ def test_bedrock_image_is_sent_as_raw_bytes() -> None:
 
 
 def test_bedrock_declares_no_api_key_auth() -> None:
-    from wai.config.secrets import USES_CREDENTIAL_CHAIN
+    from altus.config.secrets import USES_CREDENTIAL_CHAIN
 
     assert BedrockProvider.name in USES_CREDENTIAL_CHAIN
 
