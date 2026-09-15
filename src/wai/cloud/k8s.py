@@ -588,6 +588,75 @@ class K8sClient:
 
         return await asyncio.to_thread(_run)
 
+    async def port_forward(
+        self, name: str, namespace: str, remote_port: int, local_port: int
+    ) -> Any:
+        """A local listener that proxies into a pod. Returns a handle with a
+        ``close()``; the caller owns the lifetime and closes it at session end.
+
+        A background thread rather than a task, because the SDK's forwarder is
+        synchronous and blocks on accept().
+        """
+        import socket
+        import threading
+
+        from kubernetes import client as kube_client
+        from kubernetes.stream import portforward
+
+        core = kube_client.CoreV1Api(self.dynamic.client)
+
+        def _connect() -> Any:
+            return portforward(
+                core.connect_get_namespaced_pod_portforward,
+                name,
+                namespace,
+                ports=str(remote_port),
+            )
+
+        forwarder = await asyncio.to_thread(_connect)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Loopback only. Binding 0.0.0.0 would put a cluster-internal service
+        # on every interface of this machine, which nobody asked for.
+        listener.bind(("127.0.0.1", local_port))
+        listener.listen(5)
+        stop = threading.Event()
+
+        def _pump(a: Any, b: Any) -> None:
+            import contextlib
+
+            with contextlib.suppress(OSError, ValueError):
+                while not stop.is_set():
+                    data = a.recv(4096)
+                    if not data:
+                        break
+                    b.sendall(data)
+
+        def _serve() -> None:
+            while not stop.is_set():
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return  # the listener was closed; that is how we stop
+                channel = forwarder.socket(remote_port)
+                for pair in ((conn, channel), (channel, conn)):
+                    threading.Thread(target=_pump, args=pair, daemon=True).start()
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+
+        class Handle:
+            def close(self) -> None:
+                import contextlib
+
+                stop.set()
+                with contextlib.suppress(Exception):
+                    listener.close()
+                with contextlib.suppress(Exception):
+                    forwarder.close()
+
+        return Handle()
+
     async def metrics(self, kind: str, namespace: str | None = None) -> list[dict[str, Any]]:
         if not await self.api_available(METRICS_API):
             raise MetricsUnavailable

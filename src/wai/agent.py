@@ -318,6 +318,12 @@ def build_cloud_context(config: Config) -> CloudContext:
 
         provider = K8sProvider(context=settings.kube_context, kubeconfigs=kubeconfigs)
 
+    forwards = None
+    if provider is not None and settings.k8s.allow_port_forward:
+        from wai.tools.k8s.streams import PortForwards
+
+        forwards = PortForwards()
+
     def remember(name: str, _namespace: str) -> None:
         """Persist a switch the agent made, so --resume comes back to the same
         cluster. Only the WAI-scoped selection: the kubeconfig is never
@@ -337,4 +343,6 @@ def build_cloud_context(config: Config) -> CloudContext:
             settings.protected.patterns, settings.protected.accounts, settings.protected.mode
         ),
         on_context_change=remember,
+        exec_timeout=settings.k8s.exec_timeout,
+        port_forwards=forwards,
     )

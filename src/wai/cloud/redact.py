@@ -124,4 +124,20 @@ def redact_text(text: str, *, enabled: bool = True) -> str:
     )
     for pattern in patterns:
         text = re.sub(pattern, MARKER, text)
-    return text
+    return _ASSIGNMENT.sub(_scrub_assignment, text)
+
+
+#: `NAME=value` at the start of a line. This is the shape of `env`, of a
+#: .env file, and of a properties file --- and `k8s_exec -- env` is one of the
+#: first things anyone reaches for when debugging a pod, which would otherwise
+#: ship every secret the pod was given straight to the model provider.
+_ASSIGNMENT = re.compile(r"(?m)^([ \t]*[A-Za-z_][A-Za-z0-9_.\-]*)([ \t]*[=:][ \t]*)(\S.*)$")
+
+
+def _scrub_assignment(match: re.Match[str]) -> str:
+    """Judged by the same vocabulary as the structured path, so PATH and
+    HOSTNAME survive while DB_PASSWORD and AWS_SESSION_TOKEN do not."""
+    key, separator, _value = match.groups()
+    if not _is_secret_key(key.strip()):
+        return match.group(0)
+    return f"{key}{separator}{MARKER}"

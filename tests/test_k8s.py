@@ -1044,6 +1044,9 @@ async def test_mutating_tools_are_marked_as_such() -> None:
         "k8s_use_context",
         "k8s_node",
         "k8s_drain",
+        "k8s_exec",
+        "k8s_cp",
+        "k8s_port_forward",
     }
 
 
@@ -1896,3 +1899,199 @@ async def test_drain_with_nothing_to_evict_does_nothing(tmp_path) -> None:  # ty
     assert not out.is_error
     assert policy.seen == []
     assert client.real_patches == [], "not even the cordon"
+
+
+# ------------------------------------------------------------------ the streams
+
+
+class ExecClient(MutableClient):
+    def __init__(self, out: str = "hello\n", err: str = "", **kw: Any) -> None:
+        super().__init__(live=DEPLOY_LIVE, **kw)
+        self.execs: list[tuple[str, list[str], str | None]] = []
+        self._out, self._err = out, err
+
+    async def exec_pod(
+        self, name, namespace, command, *, container=None, stdin=None, timeout_seconds=60.0
+    ):  # type: ignore[no-untyped-def]
+        self.execs.append((name, list(command), stdin))
+        return self._out, self._err
+
+
+async def test_exec_is_privileged_and_never_grants_standing_approval(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = ExecClient()
+    policy = approving()
+    out = await tool("k8s_exec").run(
+        {"pod": "web-1", "command": ["ls", "/data"], "namespace": "shop"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert not out.is_error, out.content
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED
+    assert request.needs_challenge and not request.may_grant_always
+
+
+async def test_exec_refuses_a_string_command(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Splitting a string is where `sh -c` creeps back in."""
+    client = ExecClient()
+    policy = approving()
+    out = await tool("k8s_exec").run(
+        {"pod": "web-1", "command": "ls /data | grep x"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert out.is_error
+    assert client.execs == []
+    assert policy.seen == [], "refused before anyone is asked"
+
+
+async def test_exec_passes_argv_through_untouched(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = ExecClient()
+    hostile = ["sh", "-c", "echo $(id); rm -rf /"]
+    await tool("k8s_exec").run(
+        {"pod": "web-1", "command": hostile}, mutation_context(client, tmp_path, approving())
+    )
+    assert client.execs[0][1] == hostile, "WAI neither splits nor rewrites the command"
+
+
+async def test_exec_redacts_what_the_command_printed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`env` inside a container prints every secret the pod was given."""
+    client = ExecClient(out="DB_PASSWORD=hunter2\nPATH=/usr/bin\n")
+    out = await tool("k8s_exec").run(
+        {"pod": "web-1", "command": ["env"]}, mutation_context(client, tmp_path, approving())
+    )
+    assert "hunter2" not in out.content
+    assert MARKER in out.content
+
+
+async def test_exec_shows_the_command_and_the_reason_in_the_prompt(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    policy = approving()
+    await tool("k8s_exec").run(
+        {"pod": "web-1", "command": ["cat", "/etc/nginx/nginx.conf"], "reason": "config on disk"},
+        mutation_context(ExecClient(), tmp_path, policy),
+    )
+    diff = policy.seen[0].diff
+    assert "cat /etc/nginx/nginx.conf" in diff
+    assert "config on disk" in diff
+
+
+async def test_exec_denied_runs_nothing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = ExecClient()
+    out = await tool("k8s_exec").run(
+        {"pod": "web-1", "command": ["rm", "-rf", "/"]},
+        mutation_context(client, tmp_path, approving(Decision.DENY)),
+    )
+    assert out.is_error and out.denied
+    assert client.execs == []
+
+
+async def test_cp_out_of_a_pod_writes_through_the_workspace_guard(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The same rule that stops write_file touching ~/.ssh."""
+    import base64
+
+    client = ExecClient(out=base64.b64encode(b"payload").decode())
+    out = await tool("k8s_cp").run(
+        {
+            "pod": "web-1",
+            "direction": "from_pod",
+            "remote_path": "/etc/app.conf",
+            "local_path": "app.conf",
+        },
+        mutation_context(client, tmp_path, approving()),
+    )
+    assert not out.is_error, out.content
+    assert (tmp_path / "app.conf").read_bytes() == b"payload"
+
+
+@pytest.mark.parametrize("target", ["../escape.txt", "/etc/passwd", ".env"])
+async def test_cp_cannot_write_outside_the_workspace_or_over_a_secret(tmp_path, target) -> None:  # type: ignore[no-untyped-def]
+    import base64
+
+    client = ExecClient(out=base64.b64encode(b"x").decode())
+    policy = approving()
+    out = await tool("k8s_cp").run(
+        {
+            "pod": "web-1",
+            "direction": "from_pod",
+            "remote_path": "/x",
+            "local_path": target,
+        },
+        mutation_context(client, tmp_path, policy),
+    )
+    assert out.is_error, f"{target} should have been refused"
+    assert policy.seen == [], "refused before anyone is asked"
+    assert client.execs == []
+
+
+async def test_cp_quotes_the_remote_path_rather_than_interpolating(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """sh -c is unavoidable here, so a quote inside the path must not end the
+    quoting and start a second command."""
+    import base64
+
+    client = ExecClient(out=base64.b64encode(b"x").decode())
+    await tool("k8s_cp").run(
+        {
+            "pod": "web-1",
+            "direction": "from_pod",
+            "remote_path": "/tmp/a'; id; echo '",
+            "local_path": "out.txt",
+        },
+        mutation_context(client, tmp_path, approving()),
+    )
+    script = client.execs[0][1][2]
+    assert script.startswith("base64 < '")
+    assert script.endswith("'")
+    assert "'\\''" in script, "the embedded quote is escaped, not closed"
+
+
+async def test_port_forward_binds_loopback_only_and_is_session_scoped() -> None:
+    """A tunnel that outlives its session is a hole nobody remembers opening."""
+    from wai.tools.k8s.streams import PortForwards
+
+    closed: list[str] = []
+
+    class Handle:
+        def __init__(self, tag: str) -> None:
+            self.tag = tag
+
+        def close(self) -> None:
+            closed.append(self.tag)
+
+    forwards = PortForwards()
+    forwards.add("shop/web:80", Handle("a"), "localhost:80 -> web:80")
+    forwards.add("shop/api:81", Handle("b"), "localhost:81 -> api:81")
+    assert len(forwards) == 2
+    assert forwards.close("shop/web:80")
+    assert closed == ["a"]
+    assert not forwards.close("nope")
+    assert forwards.close_all() == 1
+    assert closed == ["a", "b"]
+
+
+async def test_port_forward_rejects_an_impossible_port(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from wai.tools.k8s.streams import PortForwards
+
+    policy = approving()
+    ctx = mutation_context(ExecClient(), tmp_path, policy)
+    ctx.cloud.port_forwards = PortForwards()
+    out = await tool("k8s_port_forward").run(
+        {"action": "start", "pod": "web-1", "remote_port": 99999}, ctx
+    )
+    assert out.is_error
+    assert policy.seen == []
+
+
+@pytest.mark.parametrize("name", ["k8s_exec", "k8s_cp", "k8s_port_forward"])
+def test_a_tool_declares_the_subresource_its_classification_depends_on(name: str) -> None:
+    """A tool whose danger lives in its subresource must declare it.
+
+    Leaving `subresource` unset downgrades the tool to whatever its verb alone
+    implies --- and for all three of these that verb is `get`, so each would
+    classify as an ordinary read with a standing grant on offer.
+    """
+    from wai.cloud.kube import classify
+
+    entry = tool(name)
+    assert entry.subresource, f"{name} must declare its subresource"
+    assert classify(entry.verb, "Pod", entry.subresource) is Sensitivity.PRIVILEGED
+    assert classify(entry.verb, "Pod", "") is Sensitivity.READ, (
+        "which is exactly what it would have been classified as without it"
+    )

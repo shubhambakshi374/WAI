@@ -73,11 +73,21 @@ class ToolRegistry:
             return ToolOutcome.error(f"{name} failed: {exc}", summary="failed")
 
 
-def default_registry(*, writes: bool = True, kubernetes: bool | None = None) -> ToolRegistry:
+def default_registry(
+    *,
+    writes: bool = True,
+    kubernetes: bool | None = None,
+    cloud: Any = None,
+) -> ToolRegistry:
     """The tool set for a session.
 
     Kubernetes tools register only when the SDK is installed, so a missing
-    extra is a visible absence rather than an import error at call time.
+    extra is a visible absence rather than an import error at call time. The
+    same pattern applies one level down: ``[cloud.k8s]`` switches off whole
+    capability classes, and a class that is off is never registered, so the
+    model is not told it exists.
+
+    ``cloud`` is a ``CloudSettings``; None means every class is on.
     """
     tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
     if writes:
@@ -91,5 +101,21 @@ def default_registry(*, writes: bool = True, kubernetes: bool | None = None) -> 
     if kubernetes:
         from wai.tools.k8s import k8s_tools
 
-        tools += list(k8s_tools())
+        tools += list(k8s_tools(getattr(cloud, "k8s", None)))
+
+    if _cli_enabled(cloud):
+        from wai.tools.cli import cli_tools
+
+        allowed = set(getattr(cloud, "cli_allowlist", ()) or ())
+        tools += [t for t in cli_tools() if not allowed or t.binary in allowed]
     return ToolRegistry(tools)
+
+
+def _cli_enabled(cloud: Any) -> bool:
+    """Two switches have to agree: the long-standing `cli_fallback`, and the
+    Kubernetes-specific `allow_cli`. Either one off means no CLI tools."""
+    if cloud is None:
+        return False
+    if not getattr(cloud, "cli_fallback", False):
+        return False
+    return bool(getattr(getattr(cloud, "k8s", None), "allow_cli", True))

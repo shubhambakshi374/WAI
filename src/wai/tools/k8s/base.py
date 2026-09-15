@@ -69,6 +69,10 @@ class K8sMutatingTool(K8sTool):
     verb: ClassVar[str] = "update"
     """The API verb this tool performs, for classification. Not the same as
     ``action``, which is the word shown to the user."""
+    subresource: ClassVar[str] = ""
+    """The subresource this tool always acts on --- ``exec``, ``portforward``.
+    Classification reads it, so leaving it unset silently downgrades a tool to
+    whatever its verb alone implies."""
 
     async def confirm(
         self,
@@ -103,7 +107,7 @@ class K8sMutatingTool(K8sTool):
                 summary="protected",
             )
 
-        sensitivity = classify(verb or self.verb, kind, subresource)
+        sensitivity = classify(verb or self.verb, kind, subresource or self.subresource)
         decision = await ctx.approvals.request(
             ApprovalRequest(
                 tool=self.name,

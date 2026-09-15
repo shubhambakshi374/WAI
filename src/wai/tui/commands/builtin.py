@@ -254,11 +254,26 @@ def _resolve_file(raw: str) -> str | None:
 
 async def cmd_tools(app: WaiApp, args: list[str]) -> CommandResult:
     from wai.cloud.base import INTEGRATIONS
+    from wai.cloud.kube import classify
 
     rows = [f"Workspace: {app.workspace.root}", "", "Tools:"]
     for tool in sorted(app.registry, key=lambda t: t.name):
-        access = "read-only" if tool.read_only else "needs approval"
-        rows.append(f"  {tool.name:<14} [{access:^14}]")
+        if tool.read_only:
+            access = "read-only"
+        elif classify(
+            getattr(tool, "verb", "update"), "", getattr(tool, "subresource", "")
+        ).needs_challenge:
+            access = "type to confirm"
+        else:
+            access = "needs approval"
+        rows.append(f"  {tool.name:<18} [{access:^15}]")
+
+    from wai.tools.k8s import disabled_classes
+
+    off = disabled_classes(app.config.cloud.k8s)
+    if off:
+        rows.append("\nSwitched off in [cloud.k8s] — not offered to the model:")
+        rows += [f"  {text}" for text in off]
     missing = [i for i in INTEGRATIONS if not i.available]
     if missing:
         rows.append("\nNot installed:")

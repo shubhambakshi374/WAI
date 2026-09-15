@@ -38,6 +38,10 @@ class CloudContext:
     on_context_change: Callable[[str, str], None] | None = None
     """Called after a switch, to persist it. Optional: a headless run that
     should not write config simply leaves it unset."""
+    exec_timeout: int = 60
+    port_forwards: Any = None
+    """A ``wai.tools.k8s.streams.PortForwards``. Built per session so a tunnel
+    cannot outlive the session that opened it."""
 
     def switch_context(self, name: str, namespace: str = "") -> None:
         """Point this session at another cluster.

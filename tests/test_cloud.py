@@ -474,3 +474,30 @@ def test_default_scope_is_wai_only() -> None:
     from wai.config import Config
 
     assert Config().cloud.kube_context_scope == "wai"
+
+
+@pytest.mark.parametrize(
+    ("line", "leaks"),
+    [
+        ("DB_PASSWORD=hunter2", False),
+        ("AWS_SESSION_TOKEN=abc123", False),
+        ("api_key: sk-live-9", False),
+        ("CLIENT_SECRET=shh", False),
+        ("PATH=/usr/local/bin:/usr/bin", True),
+        ("HOSTNAME=web-7d9-aaa", True),
+        ("KUBERNETES_SERVICE_PORT=443", True),
+        ("PUBLIC_KEY=ssh-rsa AAAA", True),
+    ],
+)
+def test_env_style_output_is_scrubbed_without_eating_ordinary_variables(
+    line: str, leaks: bool
+) -> None:
+    """`k8s_exec -- env` is one of the first things anyone runs on a broken
+    pod, and its output goes straight to the model provider."""
+    out = redact_text(line)
+    value = line.split("=", 1)[-1].split(":", 1)[-1].strip()
+    if leaks:
+        assert value in out, f"{line} is not a secret and must survive"
+    else:
+        assert value not in out, f"{line} leaked"
+        assert MARKER in out

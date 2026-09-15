@@ -74,6 +74,32 @@ class ProtectedSettings(BaseModel):
     mode: Literal["confirm", "deny"] = "confirm"
 
 
+class K8sSettings(BaseModel):
+    """Which classes of Kubernetes capability this machine offers at all.
+
+    A `false` here means the tool is never registered, so the model is not told
+    it exists. That is deliberately stronger than refusing at call time: a tool
+    the model cannot see costs no context and cannot be argued into being used.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_exec: bool = True
+    """exec, attach and cp. Running a command inside a container is the single
+    largest escalation here: whatever the container can reach, so can a chat
+    message."""
+    allow_port_forward: bool = True
+    """Opens a tunnel from this machine into the cluster network."""
+    allow_node_lifecycle: bool = True
+    """cordon, uncordon, taint, drain."""
+    allow_rbac_writes: bool = True
+    """Creating or changing Roles, Bindings, ServiceAccounts and CSRs."""
+    allow_cli: bool = True
+    """kubectl, helm and kustomize, when the native tools cannot express it."""
+    exec_timeout: int = 60
+    """Seconds before an exec is cut off and what it printed so far returned."""
+
+
 class CloudSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,6 +124,7 @@ class CloudSettings(BaseModel):
         default_factory=lambda: ["kubectl", "aws", "az", "gcloud", "helm", "terraform"]
     )
     protected: ProtectedSettings = Field(default_factory=ProtectedSettings)
+    k8s: K8sSettings = Field(default_factory=K8sSettings)
 
 
 class UISettings(BaseModel):
