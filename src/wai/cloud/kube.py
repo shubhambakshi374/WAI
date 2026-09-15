@@ -119,11 +119,17 @@ class KubeContext:
     """Which kubeconfig file it came from."""
 
     def target(self, namespace: str | None = None) -> CloudTarget:
+        """``None`` means "this context's namespace"; ``""`` means cluster-scoped.
+
+        The distinction matters: a Node operation has no namespace, and folding
+        that into "default" tested the protection rules against a namespace the
+        operation was never touching.
+        """
         return CloudTarget(
             cloud="k8s",
             context=self.name,
             location=self.cluster,
-            scope=namespace or self.namespace,
+            scope=self.namespace if namespace is None else namespace,
         )
 
 

@@ -2095,3 +2095,42 @@ def test_a_tool_declares_the_subresource_its_classification_depends_on(name: str
     assert classify(entry.verb, "Pod", "") is Sensitivity.READ, (
         "which is exactly what it would have been classified as without it"
     )
+
+
+# ------------------------------------------------------------------ regressions
+
+
+@pytest.mark.parametrize("form", ["exec", "EXEC", "Exec", "/exec", "/PORTFORWARD"])
+async def test_the_privileged_guard_is_case_insensitive_like_classify(tmp_path, form) -> None:  # type: ignore[no-untyped-def]
+    """classify() casefolds, so a guard that matched the raw string let `EXEC`
+    walk straight past the tool that prompts for nothing."""
+    client = FakeClient({"Pod": [pod("web-1")]})
+    out = await tool("k8s_get").run(
+        {"kind": "Pod", "name": "web-1", "subresource": form}, context_for(client, tmp_path)
+    )
+    assert out.summary == "wrong tool", f"{form} was not refused"
+
+    raw = await tool("k8s_raw").run(
+        {"path": f"/api/v1/namespaces/s/pods/p/{form.lstrip('/')}"},
+        context_for(client, tmp_path),
+    )
+    assert raw.summary == "wrong tool", f"{form} was not refused by k8s_raw"
+
+
+def test_a_cluster_scoped_operation_has_no_namespace_in_its_target() -> None:
+    """Folding it into "default" tested the protection rules against a
+    namespace the operation was never touching."""
+    from wai.cloud.kube import KubeContext
+
+    context = KubeContext(name="AKS_QAM", namespace="shop")
+    assert context.target().scope == "shop", "None still means this context's namespace"
+    assert context.target("other").scope == "other"
+    assert context.target("").scope == "", "empty means cluster-scoped"
+
+
+def test_cp_describes_the_tool_it_actually_needs() -> None:
+    """It shells base64, not tar. A description that names the wrong binary
+    sends the model debugging the wrong thing when a container lacks it."""
+    description = tool("k8s_cp").description
+    assert "base64" in description
+    assert "not tar" in description

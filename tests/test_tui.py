@@ -1412,3 +1412,35 @@ async def test_model_picker_says_so_when_there_is_no_key(monkeypatch) -> None:
         await pilot.pause()
         note = str(picker.query_one("#model-note", Label).render())
         assert "no credentials" in note and "/setup" in note
+
+
+def test_every_command_written_is_a_command_reachable() -> None:
+    """`/profile` shipped defined but unregistered, so it existed in the source
+    and not in the app. Nothing caught it because nothing asserted the two
+    lists agree --- so assert it for every command, not just that one.
+    """
+    import inspect
+
+    from wai.tui.commands import builtin
+
+    written = {
+        name.removeprefix("cmd_")
+        for name, value in vars(builtin).items()
+        if name.startswith("cmd_") and inspect.isfunction(value)
+    }
+    registered = {command.name for command in builtin.build_registry().unique}
+    assert written - registered == set(), "defined but unreachable"
+
+
+async def test_profile_command_is_reachable_from_the_app() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/profile")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Profiles:" in _notices(pilot)
+
+        await _send(pilot, "/help")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "/profile" in _notices(pilot), "and it is advertised"

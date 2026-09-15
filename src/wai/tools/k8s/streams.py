@@ -134,9 +134,9 @@ class K8sCpTool(K8sMutatingTool):
     subresource: ClassVar[str] = "exec"
     description: ClassVar[str] = (
         "Copy a single file out of a container into the workspace, or from the "
-        "workspace into a container. Implemented with exec and tar, exactly as "
-        "kubectl does, so the container needs tar on its PATH. Requires a typed "
-        "confirmation."
+        "workspace into a container. Implemented with exec and base64, so the "
+        "container needs `sh` and `base64` on its PATH — not tar. One regular "
+        "file at a time, not a directory. Requires a typed confirmation."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",

@@ -39,6 +39,10 @@ class CloudContext:
     """Called after a switch, to persist it. Optional: a headless run that
     should not write config simply leaves it unset."""
     exec_timeout: int = 60
+    cli_allowlist: tuple[str, ...] = ()
+    """Binaries the CLI fallback may run. Registration already filters on this,
+    but a tool must not depend on having been registered correctly to be safe:
+    it is checked again at call time."""
     allow_rbac_writes: bool = True
     """Creating or changing Roles, Bindings, ServiceAccounts and CSRs. Cannot
     be enforced by not registering a tool --- the same k8s_apply writes a

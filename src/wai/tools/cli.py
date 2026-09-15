@@ -104,8 +104,11 @@ class CliTool(BaseTool):
             )
         argv = [str(a) for a in raw]
 
-        settings = getattr(ctx.cloud, "cli", None)
-        if settings is not None and self.binary not in settings.allowlist:
+        # Read from the context, not from a `cli` attribute that never existed
+        # --- the old check was reading None and passing every time, so the
+        # allowlist was enforced only by registration.
+        allowlist = getattr(ctx.cloud, "cli_allowlist", ()) or ()
+        if allowlist and self.binary not in allowlist:
             return ToolOutcome.error(
                 f"{self.binary} is not in [cloud] cli_allowlist", summary="not allowed"
             )

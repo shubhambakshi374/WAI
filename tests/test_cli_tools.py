@@ -327,3 +327,31 @@ async def test_minting_a_token_counts_as_an_rbac_write(tmp_path: Path) -> None:
         subresource="token",
     )
     assert out is not None and out.is_error
+
+
+async def test_the_allowlist_is_checked_at_call_time_not_only_at_registration(
+    tmp_path: Path, on_path: Path
+) -> None:
+    """A tool must not depend on having been registered correctly to be safe.
+    The old check read a `cli` attribute that never existed on CloudContext, so
+    it was None every time and passed every time."""
+    policy = RecordingPolicy(Decision.ALLOW)
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(kube_context="AKS_QAM", cli_allowlist=("kubectl",)),
+    )
+    out = await HelmTool().run({"args": ["list"]}, ctx)
+    assert out.is_error
+    assert "cli_allowlist" in out.content
+    assert policy.seen == []
+
+
+async def test_an_allowlisted_binary_still_runs(tmp_path: Path, on_path: Path) -> None:
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=RecordingPolicy(),
+        cloud=CloudContext(kube_context="AKS_QAM", cli_allowlist=("kubectl",)),
+    )
+    out = await KubectlTool().run({"args": ["get", "pods"]}, ctx)
+    assert not out.is_error, out.content

@@ -289,10 +289,13 @@ class K8sGetTool(K8sTool):
         if not kind or not name:
             return ToolOutcome.error("kind and name are required")
         subresource = str(args.get("subresource") or "").strip()
-        if subresource in PRIVILEGED_SUBRESOURCES:
+        # Casefolded, as classify() does. Matching the raw string let `EXEC`
+        # walk straight past a guard that stopped `exec`.
+        folded = subresource.casefold().lstrip("/")
+        if folded in PRIVILEGED_SUBRESOURCES:
             return ToolOutcome.error(
                 f"{kind}/{name}/{subresource} is not a read. "
-                f"Use {_TOOL_FOR.get(subresource, 'the dedicated tool')} instead.",
+                f"Use {_TOOL_FOR.get(folded, 'the dedicated tool')} instead.",
                 summary="wrong tool",
             )
         resolved = await self.client(ctx)

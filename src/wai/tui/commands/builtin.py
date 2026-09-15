@@ -314,6 +314,13 @@ def build_registry() -> CommandRegistry:
             cmd_model,
             aliases=("models",),
         ),
+        Command(
+            "profile",
+            "List profiles, or switch to one",
+            "profile [use <name>]",
+            cmd_profile,
+            aliases=("profiles",),
+        ),
         Command("login", "Cloud auth status, or sign in", "login [<cloud>]", cmd_login),
         Command("kube", "Kubernetes contexts", "kube [use <ctx> | add <path>]", cmd_kube),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),
