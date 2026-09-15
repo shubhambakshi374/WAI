@@ -41,7 +41,7 @@ class MessageBubble(Static):
         self.add_class(f"-{role.value}")
 
     def compose(self) -> ComposeResult:
-        yield Label(_ROLE_LABEL.get(self.role, self.role.value), classes="role")
+        yield Label(_ROLE_LABEL.get(self.role, self.role.value), classes="role", markup=False)
         if self._reasoning:
             with Collapsible(title="reasoning", collapsed=True, id="reasoning-box"):
                 yield Markdown(self._reasoning, id="reasoning-body")
@@ -94,7 +94,7 @@ class NoticeBubble(Static):
 
     def compose(self) -> ComposeResult:
         if self.title_text:
-            yield Label(self.title_text, classes="notice-title")
+            yield Label(self.title_text, classes="notice-title", markup=False)
         yield Static(self.body_text, markup=False)
 
     @property

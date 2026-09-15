@@ -13,6 +13,8 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.widgets import Collapsible, Static
 
+from wai.tui.markup import literal
+
 
 def summarize_args(args: dict[str, Any], limit: int = 48) -> str:
     if not args:
@@ -44,8 +46,12 @@ class ToolCallWidget(Static):
         self.add_class("-running")
 
     def compose(self) -> ComposeResult:
-        with Collapsible(title=self._title("⋯"), collapsed=True):
-            yield Static(self._detail(), id="tool-detail")
+        # literal(), not a bare string: Collapsible runs a str title through
+        # Content.from_markup, and these titles carry repr()d tool arguments.
+        # A list argument puts brackets in the title, summarize_args truncates
+        # mid-bracket, and Textual raises trying to read a style tag. See #1.
+        with Collapsible(title=literal(self._title("⋯")), collapsed=True):
+            yield Static(self._detail(), id="tool-detail", markup=False)
 
     def _title(self, mark: str, summary: str = "") -> str:
         head = f"{mark} {self.tool_name}({summarize_args(self.args)})"
@@ -61,4 +67,5 @@ class ToolCallWidget(Static):
         self.remove_class("-running")
         self.add_class("-failed" if is_error else "-done")
         if self.is_mounted:
-            self.query_one(Collapsible).title = self._title("✗" if is_error else "✓", summary)
+            title = self._title("✗" if is_error else "✓", summary)
+            self.query_one(Collapsible).title = literal(title)

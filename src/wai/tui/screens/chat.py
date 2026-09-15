@@ -143,7 +143,7 @@ class ChatScreen(Screen[None]):
         try:
             result = await dispatch(app, app.commands, text)
         except Exception as exc:  # a broken command must not kill the session
-            self.notify(f"Command failed: {exc}", severity="error", timeout=10)
+            self.notify(f"Command failed: {exc}", severity="error", timeout=10, markup=False)
             return
         if result.body:
             await self.query_one(MessageList).add_notice(result.title, result.body, result.severity)
@@ -190,11 +190,11 @@ class ChatScreen(Screen[None]):
                     case ToolFinished():
                         await self._finish_tool(event)
                     case ToolDenied():
-                        self.notify(f"Rejected {event.name}.", severity="warning")
+                        self.notify(f"Rejected {event.name}.", severity="warning", markup=False)
                     case UsageUpdate():
                         status.usage = app.session.usage
                     case StreamError():
-                        self.notify(event.message, severity="error", timeout=10)
+                        self.notify(event.message, severity="error", timeout=10, markup=False)
                     case IterationEnd():
                         await self._flush()
                         self._close_bubble()
@@ -204,7 +204,7 @@ class ChatScreen(Screen[None]):
             raise
         except WaiError as exc:
             error = str(exc)
-            self.notify(error, severity="error", timeout=10)
+            self.notify(error, severity="error", timeout=10, markup=False)
         finally:
             await self._finish_turn(start, cancelled=cancelled, error=error)
 
@@ -322,7 +322,7 @@ class ChatScreen(Screen[None]):
         status = self.query_one(StatusBar)
         status.provider = app.session.provider
         status.model = app.session.model
-        self.notify(f"Switched to {chosen.label} ({chosen.provider}).")
+        self.notify(f"Switched to {chosen.label} ({chosen.provider}).", markup=False)
 
     def action_quit_app(self) -> None:
         self.app.exit()

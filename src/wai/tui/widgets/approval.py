@@ -101,20 +101,26 @@ class ApprovalModal(ModalScreen[Decision]):
     def compose(self) -> ComposeResult:
         req = self.request
         with Vertical():
-            yield Label(f"{req.action.upper()} — approval required", classes="headline")
-            yield Label(req.path, classes="path")
+            yield Label(
+                f"{req.action.upper()} — approval required", classes="headline", markup=False
+            )
+            yield Label(req.path, classes="path", markup=False)
             if req.target:
-                yield Label(req.target, classes="target")
+                yield Label(req.target, classes="target", markup=False)
             if self.challenge:
-                yield Label(self._challenge_banner(), classes="protected")
+                yield Label(self._challenge_banner(), classes="protected", markup=False)
                 yield Input(placeholder=self.challenge, id="challenge")
             if req.dry_run:
-                yield Label(f"✓ {req.dry_run}", classes="dry-run")
+                yield Label(f"✓ {req.dry_run}", classes="dry-run", markup=False)
             if req.recoverability:
                 danger = (
                     "cannot be undone" in req.recoverability or "permanent" in req.recoverability
                 )
-                yield Label(req.recoverability, classes=f"recover{' -danger' if danger else ''}")
+                yield Label(
+                    req.recoverability,
+                    classes=f"recover{' -danger' if danger else ''}",
+                    markup=False,
+                )
             with VerticalScroll():
                 yield Static(self._render_diff(), markup=False, id="diff")
             with Horizontal():
@@ -157,7 +163,7 @@ class ApprovalModal(ModalScreen[Decision]):
             if self.request.sensitivity.needs_challenge
             else "a change to a protected environment"
         )
-        self.notify(f"Type {self.challenge} to confirm {what}.", severity="warning")
+        self.notify(f"Type {self.challenge} to confirm {what}.", severity="warning", markup=False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         choice = {

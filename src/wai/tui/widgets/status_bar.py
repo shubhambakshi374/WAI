@@ -37,10 +37,10 @@ class StatusBar(Horizontal):
     def compose(self) -> ComposeResult:
         # Seed from the current values. Watchers fire before compose runs, so
         # relying on them alone leaves the labels blank until first assignment.
-        yield Label(self._model_text(), id="status-model")
-        yield Label(self._usage_text(), id="status-usage")
-        yield Label(self._granted_text(), id="status-granted")
-        yield Label(self.state, id="status-state")
+        yield Label(self._model_text(), id="status-model", markup=False)
+        yield Label(self._usage_text(), id="status-usage", markup=False)
+        yield Label(self._granted_text(), id="status-granted", markup=False)
+        yield Label(self.state, id="status-state", markup=False)
 
     def _model_text(self) -> str:
         return f"{self.provider} · {self.model}"
