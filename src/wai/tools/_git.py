@@ -32,7 +32,7 @@ async def _git(*args: str, cwd: Path) -> tuple[int, str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT)
-    except (OSError, TimeoutError):
+    except OSError, TimeoutError:
         return 1, ""
     return proc.returncode or 0, out.decode("utf-8", errors="replace")
 

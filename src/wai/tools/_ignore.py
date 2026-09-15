@@ -65,7 +65,7 @@ class IgnoreFilter:
                 spec = pathspec.PathSpec.from_lines(
                     "gitignore", gitignore.read_text(encoding="utf-8").splitlines()
                 )
-            except (OSError, UnicodeDecodeError, ImportError):
+            except OSError, UnicodeDecodeError, ImportError:
                 spec = None
         self._specs[directory] = spec
         return spec

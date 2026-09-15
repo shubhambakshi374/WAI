@@ -130,7 +130,7 @@ def _all_importable(modules: tuple[str, ...]) -> bool:
         try:
             if importlib.util.find_spec(module) is None:
                 return False
-        except (ImportError, ValueError):
+        except ImportError, ValueError:
             return False
     return True
 

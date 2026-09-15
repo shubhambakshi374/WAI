@@ -72,7 +72,7 @@ class WaiApp(App[None]):
             if session_id:
                 try:
                     return self.store.load(session_id)
-                except (FileNotFoundError, ValueError):
+                except FileNotFoundError, ValueError:
                     pass
         return self._new_session()
 

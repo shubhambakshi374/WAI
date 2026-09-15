@@ -373,7 +373,7 @@ class K8sPortForwardTool(K8sMutatingTool):
             return ToolOutcome.error("pod is required")
         try:
             remote_port = int(args.get("remote_port") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return ToolOutcome.error("remote_port must be a whole number")
         if not 1 <= remote_port <= 65535:
             return ToolOutcome.error("remote_port must be between 1 and 65535")

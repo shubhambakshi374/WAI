@@ -3,7 +3,7 @@ name = "wai"
 version = "0.1.0"
 description = "A TUI coding and DevOps harness with BYOK multi-provider LLM support"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Shubham Bakshi" }]
@@ -12,9 +12,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Topic :: System :: Systems Administration",
@@ -57,7 +54,9 @@ wai = "wai.cli:main"
 [dependency-groups]
 dev = [
     "wai[all]",
-    "pytest>=8.3,<9",
+    # pytest 9 is blocked by pytest-textual-snapshot, which pins syrupy==4.8.0
+    # and so caps pytest <9. Revisit when that plugin catches up.
+    "pytest>=8.4,<9",
     "pytest-asyncio>=1.0",
     "pytest-textual-snapshot>=1.1",
     "pytest-timeout>=2.3",
@@ -86,14 +85,14 @@ timeout = 90
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 packages = ["wai"]
 mypy_path = "src"
 strict = true

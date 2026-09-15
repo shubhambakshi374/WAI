@@ -274,7 +274,7 @@ class K8sScaleTool(K8sMutatingTool):
             return ToolOutcome.error("replicas is required")
         try:
             replicas = int(args["replicas"])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return ToolOutcome.error("replicas must be a whole number")
         if replicas < 0:
             return ToolOutcome.error("replicas cannot be negative")
@@ -502,7 +502,7 @@ class K8sRolloutTool(K8sMutatingTool):
             )
             try:
                 return int(raw)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return 0
 
         owned.sort(key=revision, reverse=True)

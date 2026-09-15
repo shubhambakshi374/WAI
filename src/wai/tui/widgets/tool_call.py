@@ -54,7 +54,7 @@ class ToolCallWidget(Static):
     def _detail(self) -> str:
         try:
             return json.dumps(self.args, indent=2, default=str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return str(self.args)
 
     def finish(self, *, summary: str, is_error: bool) -> None:

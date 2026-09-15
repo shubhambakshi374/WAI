@@ -11,7 +11,7 @@ into a software factory.
 
 ## Install
 
-Requires Python 3.11+, or [uv](https://docs.astral.sh/uv/), which fetches an
+Requires Python 3.14+, or [uv](https://docs.astral.sh/uv/), which fetches an
 interpreter for you.
 
 **WAI is not on PyPI**, so `uv tool install wai` will not work. Clone it:

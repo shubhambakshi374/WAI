@@ -281,5 +281,5 @@ def _retry_after(exc: Exception) -> float | None:
     header = getattr(response, "headers", {}).get("retry-after") if response else None
     try:
         return float(header) if header else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
