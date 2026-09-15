@@ -711,3 +711,64 @@ def test_a_chart_says_something_useful_in_text() -> None:
         title="CPU", series=[_timed("web", [1, 2, 3]), _timed("api", [3, 2, 1])], caption="2m"
     ).to_text()
     assert "CPU" in text and "web" in text and "api" in text and "2m" in text
+
+
+# ------------------------------------------------- when the extra is absent
+
+# Verified by blocking the import rather than by building an environment
+# without it. An earlier attempt at the latter installed textual-image anyway
+# --- the extra came back through the lockfile --- so the check passed while
+# proving nothing. Blocking the module is unambiguous and runs in CI.
+
+
+def _without_textual_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    real = importlib.util.find_spec
+
+    def blocked(name: str, *args: object, **kwargs: object) -> object:
+        if name == "textual_image":
+            return None
+        return real(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", blocked)
+
+
+def test_a_capable_terminal_without_the_extra_falls_back_to_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing optional dependency is a visible, fixable state --- not an
+    import error at draw time."""
+    from wai.render.capability import available, detect
+
+    _without_textual_image(monkeypatch)
+    kitty = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}
+    assert detect(kitty).value == "image", "the terminal is still capable"
+    assert available(kitty).value == "cells", "but we cannot use it"
+
+
+def test_the_explanation_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    from wai.render.capability import explain
+
+    _without_textual_image(monkeypatch)
+    message = explain("auto", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"})
+    assert "graphics extra" in message
+    assert "uv sync --extra graphics" in message, "say how to fix it, not just what broke"
+
+
+def test_drawing_never_needed_textual_image_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """wai.render draws with Pillow. textual-image only puts the result on a
+    terminal, so rendering itself must not depend on it."""
+    _without_textual_image(monkeypatch)
+    assert render(BARS, size=(480, 200)) is not None
+    assert render(GAUGE, size=(480, 200)) is not None
+
+
+def test_the_cell_map_never_needed_it_either(
+    monkeypatch: pytest.MonkeyPatch, graph: ResourceGraph
+) -> None:
+    from wai.render.cells import draw_graph
+
+    _without_textual_image(monkeypatch)
+    grid = draw_graph(graph, width=100, height=24, palette=DARK)
+    assert grid.hits, "the map is exactly what a terminal without images gets"
