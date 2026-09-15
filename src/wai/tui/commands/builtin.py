@@ -284,6 +284,50 @@ async def cmd_tools(app: WaiApp, args: list[str]) -> CommandResult:
     return CommandResult("\n".join(rows), title="Tools")
 
 
+async def cmd_dashboard(app: WaiApp, args: list[str]) -> CommandResult:
+    """Four read-only views of one namespace, on one screen."""
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    if "k8s_topology" not in app.registry:
+        return CommandResult.error(
+            "Kubernetes tools are not available. Install the extra with: uv sync --extra k8s"
+        )
+    namespace = args[0] if args else "default"
+    app.push_screen(DashboardScreen(namespace, setting=app.config.ui.graphics))
+    return CommandResult.silent()
+
+
+async def cmd_graphics(app: WaiApp, args: list[str]) -> CommandResult:
+    """What is being drawn and why --- the answer to "where are my pictures"."""
+    from wai.render.capability import Support, available, detect, explain, images_installed
+
+    settings = app.config.ui
+    if args:
+        wanted = args[0].casefold()
+        if wanted not in {"auto", "image", "cells", "off"}:
+            return CommandResult.error("usage: /graphics [auto | image | cells | off]")
+        from wai.config import save_config
+
+        settings.graphics = wanted  # type: ignore[assignment]
+        save_config(app.config)
+        return CommandResult(f"Graphics set to {wanted}. {explain(wanted)}.")
+
+    rows = [
+        f"Setting:   {settings.graphics}",
+        f"Terminal:  {detect().value}  ({explain(settings.graphics)})",
+        f"Installed: {'yes' if images_installed() else 'no — uv sync --extra graphics'}",
+        "",
+        "  image  Kitty protocol or Sixel. Kitty, Ghostty, WezTerm, iTerm2.",
+        "  cells  Box-drawing characters. Works everywhere, labels stay crisp.",
+        "  off    The plain text views.",
+        "",
+        "  /graphics <mode> to change it",
+    ]
+    if available() is not Support.IMAGE and settings.graphics in {"auto", "image"}:
+        rows.insert(3, "  Topology still draws as a map; only the charts lose detail.")
+    return CommandResult("\n".join(rows), title="Graphics")
+
+
 async def cmd_new(app: WaiApp, args: list[str]) -> CommandResult:
     await app.new_session_from_command()
     return CommandResult.silent()
@@ -324,6 +368,18 @@ def build_registry() -> CommandRegistry:
         Command("login", "Cloud auth status, or sign in", "login [<cloud>]", cmd_login),
         Command("kube", "Kubernetes contexts", "kube [use <ctx> | add <path>]", cmd_kube),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),
+        Command(
+            "dashboard",
+            "Topology, usage and storage on one screen",
+            "dashboard [<namespace>]",
+            cmd_dashboard,
+        ),
+        Command(
+            "graphics",
+            "How visuals are drawn, and why",
+            "graphics [auto | image | cells | off]",
+            cmd_graphics,
+        ),
         Command("new", "Start a new session", "new", cmd_new, aliases=("clear",)),
     ):
         registry.register(command)

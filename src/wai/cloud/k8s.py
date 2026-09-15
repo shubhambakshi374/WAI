@@ -740,6 +740,18 @@ def node_id(kind: str, namespace: str, name: str) -> str:
     return f"{kind}/{namespace}/{name}"
 
 
+def split_node_id(ident: str) -> tuple[str, str, str] | None:
+    """The inverse of ``node_id``: (kind, namespace, name), or None.
+
+    Lives beside its builder so the two cannot drift. A cluster-scoped object
+    has an empty namespace, which still yields three parts.
+    """
+    parts = ident.split("/")
+    if len(parts) != 3 or not parts[0] or not parts[2]:
+        return None
+    return (parts[0], parts[1], parts[2])
+
+
 def _meta(obj: dict[str, Any]) -> dict[str, Any]:
     return obj.get("metadata") or {}
 

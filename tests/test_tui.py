@@ -1008,6 +1008,12 @@ async def test_a_bare_slash_offers_every_command() -> None:
         names = {s.command.name for s in panel.suggestions}
         assert {"help", "kube", "login", "provider", "model", "tools"} <= names
 
+        # Every one of them, not just the first screenful. Adding a command
+        # must not silently push another out of the list a bare slash shows.
+        from wai.tui.commands.builtin import build_registry
+
+        assert names == {command.name for command in build_registry().unique}
+
 
 async def test_suggestions_filter_as_you_type() -> None:
     app = make_app()
@@ -1444,3 +1450,380 @@ async def test_profile_command_is_reachable_from_the_app() -> None:
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
         assert "/profile" in _notices(pilot), "and it is advertised"
+
+
+# --------------------------------------------------------------- graphics
+
+# The fallback is the load-bearing part of terminal graphics. A terminal that
+# cannot draw must get a working screen, not an error and not escape codes.
+
+
+def _graph_visual():  # type: ignore[no-untyped-def]
+    from wai.core.visuals import GraphEdge, GraphNode, ResourceGraph
+
+    web = GraphNode(id="apps/v1/Deployment/shop/web", kind="Deployment", name="web", status="2/2")
+    pod = GraphNode(id="v1/Pod/shop/web-1", kind="Pod", name="web-1", status="Running")
+    return ResourceGraph(
+        title="shop",
+        nodes=[web, pod],
+        edges=[GraphEdge(source=web.id, target=pod.id, relation="owns")],
+    )
+
+
+APPLE = {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}
+KITTY = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}
+
+#: Everything detection looks at. Cleared before each case so the developer's
+#: own terminal cannot leak in and make a test pass for the wrong reason.
+TERMINAL_VARS = (
+    "TERM",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "TMUX",
+    "KITTY_WINDOW_ID",
+    "GHOSTTY_RESOURCES_DIR",
+    "WEZTERM_PANE",
+    "KONSOLE_VERSION",
+)
+
+
+def pretend_terminal(monkeypatch, env: dict[str, str]) -> None:  # type: ignore[no-untyped-def]
+    """Set the terminal variables, and *only* those.
+
+    Never `monkeypatch.setattr("os.environ", ...)`. Replacing the mapping
+    wholesale throws away everything conftest put there --- the provider key
+    and the AWS credential blocks --- so the app finds nothing configured and
+    opens the first-run wizard over the chat screen. On a developer's machine
+    botocore then picks up a real ~/.aws and the wizard does not open, so the
+    test passes locally and fails on a runner with no credentials. That is
+    exactly the divergence fe2266c existed to end.
+    """
+    for name in TERMINAL_VARS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_graphics_off_gives_exactly_the_view_it_always_gave(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Nothing about the text path may change. It is what CI, a pipe and a
+    dumb terminal get, and it is the floor everything else falls back to."""
+    from wai.core.visuals import Bars
+    from wai.tui.widgets.visuals import BarsView, build_text_view, build_view
+
+    model = Bars(title="cpu", bars=[])
+    assert isinstance(build_view(model, setting="off"), BarsView)
+    assert type(build_view(model, setting="off")) is type(build_text_view(model))
+
+
+def test_a_terminal_without_graphics_still_draws_a_topology(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Terminal.app cannot show an image, but it can show a map --- and that
+    is the whole reason the cell back end exists."""
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+
+    panel = GraphicsPanel(_graph_visual(), setting="auto")
+    assert panel.support.value == "cells"
+    children = list(panel.compose())
+    assert any(isinstance(child, CellMap) for child in children)
+
+
+def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A bar chart as box characters is worse than the text rendering, which
+    was written for exactly this width and says the numbers out loud."""
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.core.visuals import Bar, Bars
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel
+
+    panel = GraphicsPanel(Bars(title="cpu", bars=[Bar(label="a", value=1)]), setting="auto")
+    assert not any(isinstance(child, CellMap) for child in panel.compose())
+
+
+def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, KITTY)
+    from wai.tui.widgets.graphics import GraphicsPanel, ImageMap
+
+    panel = GraphicsPanel(_graph_visual(), setting="auto")
+    assert panel.support.value == "image"
+    assert any(isinstance(child, ImageMap) for child in panel.compose())
+
+
+def test_a_visual_we_do_not_draw_falls_through_whatever_the_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, KITTY)
+    from wai.core.visuals import Table
+    from wai.tui.widgets.graphics import GraphicsPanel
+    from wai.tui.widgets.visuals import TableView
+
+    panel = GraphicsPanel(Table(columns=["a"], rows=[["b"]]), setting="auto")
+    assert any(isinstance(child, TableView) for child in panel.compose())
+
+
+async def test_the_cell_map_renders_without_a_graphics_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Mounted for real, not just constructed."""
+    pretend_terminal(monkeypatch, APPLE)
+    from textual.app import App, ComposeResult
+
+    from wai.render import DARK
+    from wai.tui.widgets.graphics import CellMap
+
+    class Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield CellMap(_graph_visual(), DARK)
+
+    app = Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = app.query_one(CellMap).render()
+        assert "Deployment" in text.plain
+        assert "web-1" in text.plain
+
+
+async def test_clicking_a_node_in_the_cell_map_reports_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, APPLE)
+    from textual.app import App, ComposeResult
+
+    from wai.render import DARK
+    from wai.tui.widgets.graphics import CellMap, NodeSelected
+
+    seen: list[str] = []
+
+    class Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield CellMap(_graph_visual(), DARK)
+
+        def on_node_selected(self, message: NodeSelected) -> None:
+            seen.append(message.node_id)
+
+    app = Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        widget = app.query_one(CellMap)
+        widget.render()  # populates the hit map
+        assert widget._grid is not None
+        hit = widget._grid.hits[0]
+        await pilot.click(CellMap, offset=(hit.box[0] + 2, hit.box[1] + 1))
+        await pilot.pause()
+    assert seen == [hit.node_id]
+
+
+async def test_graphics_command_explains_itself() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/graphics")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "Setting" in rendered and "Terminal" in rendered
+
+
+async def test_graphics_command_rejects_a_mode_that_does_not_exist() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await _send(pilot, "/graphics sideways")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "auto | image | cells | off" in _notices(pilot)
+
+
+async def test_clicking_a_node_opens_the_object(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Drill-down is the whole point of the hit map. It reaches k8s_get and
+    nothing else, so no approval is ever involved."""
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.tui.screens.detail import NodeDetail
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel, NodeSelected
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        panel = GraphicsPanel(_graph_visual(), setting="auto")
+        await app.screen.mount(panel)
+        await pilot.pause()
+        panel.query_one(CellMap).render()
+        panel.post_message(NodeSelected("Deployment/shop/web", "Deployment/web"))
+        await pilot.pause()
+        assert isinstance(app.screen, NodeDetail)
+
+
+async def test_the_detail_screen_reports_an_unparseable_identity() -> None:
+    from textual.widgets import Static
+
+    from wai.tui.screens.detail import NodeDetail
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.push_screen(NodeDetail("nonsense", "nonsense"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        body = app.screen.query_one("#body", Static)
+        assert "not a Kind/namespace/name" in str(body.content)
+
+
+async def test_the_detail_screen_says_so_when_kubernetes_is_absent() -> None:
+    from textual.widgets import Static
+
+    from wai.tools import ToolRegistry
+    from wai.tui.screens.detail import NodeDetail
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry = ToolRegistry([])
+        app.push_screen(NodeDetail("Deployment/shop/web", "Deployment/web"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        body = app.screen.query_one("#body", Static)
+        assert "not available" in str(body.content)
+
+
+async def test_zoom_and_pan_re_render_rather_than_scale(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Re-rendering is why text stays sharp zoomed in. Scaling a bitmap would
+    blur exactly the labels the map exists to show."""
+    pretend_terminal(monkeypatch, KITTY)
+    from wai.render import View
+    from wai.tui.widgets.graphics import ImageMap
+
+    widget = ImageMap(_graph_visual(), __import__("wai.render", fromlist=["DARK"]).DARK)
+    assert widget.view == View()
+
+    widget.view = widget.view.zoomed(1.25)
+    assert widget.view.scale > 1.0
+
+    before = widget.view
+    widget.view = widget.view.panned(-60 / before.scale, 0)
+    assert widget.view.offset[0] < 0
+
+    widget.view = View()
+    assert widget.view.offset == (0.0, 0.0), "fit returns to the origin"
+
+
+# -------------------------------------------------------------- dashboard
+
+
+def _k8s_registry(objects=None):  # type: ignore[no-untyped-def]
+    """A registry whose k8s tools answer from recorded payloads."""
+    from pathlib import Path
+
+    from tests.test_k8s import CLUSTER, FakeClient, FakeProvider
+    from wai.cloud.base import ProtectionRules
+    from wai.tools import ToolRegistry
+    from wai.tools.base import CloudContext, ToolContext
+    from wai.tools.k8s import k8s_tools
+    from wai.workspace import Workspace
+
+    client = FakeClient(objects if objects is not None else CLUSTER)
+    registry = ToolRegistry(k8s_tools())
+    context = ToolContext(
+        workspace=Workspace(root=Path(".")),
+        cloud=CloudContext(k8s=FakeProvider(client), protection=ProtectionRules()),
+    )
+    return registry, context
+
+
+async def test_the_dashboard_populates_itself(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Waiting for the agent to call the right four tools would leave the
+    screen blank on open, which is not a dashboard."""
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.tui.screens.dashboard import PANELS, DashboardScreen, Panel
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        app.push_screen(DashboardScreen("shop"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panels = list(app.screen.query(Panel))
+        assert len(panels) == len(PANELS)
+        for panel in panels:
+            assert panel.children, f"{panel.title_text} drew nothing"
+
+
+async def test_every_dashboard_panel_is_a_read() -> None:
+    """The dashboard runs tools on open without asking. That is only
+    acceptable because none of them can change anything."""
+    from wai.tools.k8s import k8s_tools
+    from wai.tui.screens.dashboard import PANELS
+
+    by_name = {tool.name: tool for tool in k8s_tools()}
+    for _title, name, _args in PANELS:
+        assert by_name[name].read_only, f"{name} is not a read"
+
+
+async def test_a_failing_panel_does_not_blank_the_others(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """RBAC often permits some reads and not others."""
+    pretend_terminal(monkeypatch, APPLE)
+    from tests.test_k8s import CLUSTER
+    from wai.tui.screens.dashboard import DashboardScreen, Panel
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        registry, context = _k8s_registry(CLUSTER)
+        original = registry.execute
+
+        async def flaky(name, args, ctx):  # type: ignore[no-untyped-def]
+            if name == "k8s_top":
+                raise RuntimeError("forbidden")
+            return await original(name, args, ctx)
+
+        registry.execute = flaky  # type: ignore[method-assign]
+        app.registry, app.tool_ctx = registry, context
+        app.push_screen(DashboardScreen("shop"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = " ".join(
+            str(child.content)
+            for panel in app.screen.query(Panel)
+            for child in panel.children
+            if hasattr(child, "content")
+        )
+        assert "forbidden" in rendered, "the failure is reported"
+        assert len(list(app.screen.query(Panel))) == 4, "and the rest still stand"
+
+
+async def test_changing_the_namespace_reloads(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, APPLE)
+    from textual.widgets import Input
+
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        screen = DashboardScreen("shop")
+        app.push_screen(screen)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+
+        field = screen.query_one("#namespace", Input)
+        field.value = "other"
+        await field.action_submit()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert screen.namespace == "other"
+
+
+async def test_dashboard_command_refuses_without_kubernetes() -> None:
+    from wai.tools import ToolRegistry
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry = ToolRegistry([])
+        await _send(pilot, "/dashboard")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "not available" in _notices(pilot)
+
+
+async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.tui.screens.dashboard import DashboardScreen
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry, app.tool_ctx = _k8s_registry()
+        await _send(pilot, "/dashboard shop")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        assert app.screen.namespace == "shop"

@@ -143,7 +143,15 @@ class GeminiProvider(BaseProvider):
         try:
             raw_stream = await client.aio.models.generate_content_stream(
                 model=request.model,
-                contents=_to_contents(request.messages),
+                # The SDK accepts a list of ContentDict, and `_to_contents`
+                # builds exactly that shape --- but as `dict[str, Any]`, which
+                # is not assignable to a TypedDict. Cast rather than restate
+                # the SDK's types, which are a fourteen-member union.
+                #
+                # This only became visible once Pillow entered the environment
+                # for the graphics extra: without it, `PIL.Image` in that union
+                # was unresolvable and mypy checked nothing here at all.
+                contents=cast("Any", _to_contents(request.messages)),
                 config=cast("Any", config),
             )
         except Exception as exc:
