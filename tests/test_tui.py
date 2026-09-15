@@ -1473,6 +1473,37 @@ def _graph_visual():  # type: ignore[no-untyped-def]
 APPLE = {"TERM": "xterm-256color", "TERM_PROGRAM": "Apple_Terminal"}
 KITTY = {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}
 
+#: Everything detection looks at. Cleared before each case so the developer's
+#: own terminal cannot leak in and make a test pass for the wrong reason.
+TERMINAL_VARS = (
+    "TERM",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "TMUX",
+    "KITTY_WINDOW_ID",
+    "GHOSTTY_RESOURCES_DIR",
+    "WEZTERM_PANE",
+    "KONSOLE_VERSION",
+)
+
+
+def pretend_terminal(monkeypatch, env: dict[str, str]) -> None:  # type: ignore[no-untyped-def]
+    """Set the terminal variables, and *only* those.
+
+    Never `monkeypatch.setattr("os.environ", ...)`. Replacing the mapping
+    wholesale throws away everything conftest put there --- the provider key
+    and the AWS credential blocks --- so the app finds nothing configured and
+    opens the first-run wizard over the chat screen. On a developer's machine
+    botocore then picks up a real ~/.aws and the wizard does not open, so the
+    test passes locally and fails on a runner with no credentials. That is
+    exactly the divergence fe2266c existed to end.
+    """
+    for name in TERMINAL_VARS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
 
 def test_graphics_off_gives_exactly_the_view_it_always_gave(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Nothing about the text path may change. It is what CI, a pipe and a
@@ -1488,7 +1519,7 @@ def test_graphics_off_gives_exactly_the_view_it_always_gave(monkeypatch) -> None
 def test_a_terminal_without_graphics_still_draws_a_topology(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Terminal.app cannot show an image, but it can show a map --- and that
     is the whole reason the cell back end exists."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from wai.tui.widgets.graphics import CellMap, GraphicsPanel
 
     panel = GraphicsPanel(_graph_visual(), setting="auto")
@@ -1500,7 +1531,7 @@ def test_a_terminal_without_graphics_still_draws_a_topology(monkeypatch) -> None
 def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """A bar chart as box characters is worse than the text rendering, which
     was written for exactly this width and says the numbers out loud."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from wai.core.visuals import Bar, Bars
     from wai.tui.widgets.graphics import CellMap, GraphicsPanel
 
@@ -1509,7 +1540,7 @@ def test_charts_on_a_plain_terminal_use_the_text_view(monkeypatch) -> None:  # t
 
 
 def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("os.environ", KITTY)
+    pretend_terminal(monkeypatch, KITTY)
     from wai.tui.widgets.graphics import GraphicsPanel, ImageMap
 
     panel = GraphicsPanel(_graph_visual(), setting="auto")
@@ -1518,7 +1549,7 @@ def test_a_capable_terminal_gets_the_image(monkeypatch) -> None:  # type: ignore
 
 
 def test_a_visual_we_do_not_draw_falls_through_whatever_the_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("os.environ", KITTY)
+    pretend_terminal(monkeypatch, KITTY)
     from wai.core.visuals import Table
     from wai.tui.widgets.graphics import GraphicsPanel
     from wai.tui.widgets.visuals import TableView
@@ -1529,7 +1560,7 @@ def test_a_visual_we_do_not_draw_falls_through_whatever_the_terminal(monkeypatch
 
 async def test_the_cell_map_renders_without_a_graphics_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Mounted for real, not just constructed."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from textual.app import App, ComposeResult
 
     from wai.render import DARK
@@ -1548,7 +1579,7 @@ async def test_the_cell_map_renders_without_a_graphics_terminal(monkeypatch) -> 
 
 
 async def test_clicking_a_node_in_the_cell_map_reports_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from textual.app import App, ComposeResult
 
     from wai.render import DARK
@@ -1597,7 +1628,7 @@ async def test_graphics_command_rejects_a_mode_that_does_not_exist() -> None:
 async def test_clicking_a_node_opens_the_object(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Drill-down is the whole point of the hit map. It reaches k8s_get and
     nothing else, so no approval is ever involved."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from wai.tui.screens.detail import NodeDetail
     from wai.tui.widgets.graphics import CellMap, GraphicsPanel, NodeSelected
 
@@ -1647,7 +1678,7 @@ async def test_the_detail_screen_says_so_when_kubernetes_is_absent() -> None:
 async def test_zoom_and_pan_re_render_rather_than_scale(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Re-rendering is why text stays sharp zoomed in. Scaling a bitmap would
     blur exactly the labels the map exists to show."""
-    monkeypatch.setattr("os.environ", KITTY)
+    pretend_terminal(monkeypatch, KITTY)
     from wai.render import View
     from wai.tui.widgets.graphics import ImageMap
 
@@ -1691,7 +1722,7 @@ def _k8s_registry(objects=None):  # type: ignore[no-untyped-def]
 async def test_the_dashboard_populates_itself(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Waiting for the agent to call the right four tools would leave the
     screen blank on open, which is not a dashboard."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from wai.tui.screens.dashboard import PANELS, DashboardScreen, Panel
 
     app = make_app()
@@ -1720,7 +1751,7 @@ async def test_every_dashboard_panel_is_a_read() -> None:
 
 async def test_a_failing_panel_does_not_blank_the_others(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """RBAC often permits some reads and not others."""
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from tests.test_k8s import CLUSTER
     from wai.tui.screens.dashboard import DashboardScreen, Panel
 
@@ -1751,7 +1782,7 @@ async def test_a_failing_panel_does_not_blank_the_others(monkeypatch) -> None:  
 
 
 async def test_changing_the_namespace_reloads(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from textual.widgets import Input
 
     from wai.tui.screens.dashboard import DashboardScreen
@@ -1785,7 +1816,7 @@ async def test_dashboard_command_refuses_without_kubernetes() -> None:
 
 
 async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("os.environ", APPLE)
+    pretend_terminal(monkeypatch, APPLE)
     from wai.tui.screens.dashboard import DashboardScreen
 
     app = make_app()
