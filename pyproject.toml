@@ -45,8 +45,8 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/packet-burst/WAI"
-Repository = "https://github.com/packet-burst/WAI"
+Homepage = "https://github.com/shubhambakshi374/WAI"
+Repository = "https://github.com/shubhambakshi374/WAI"
 
 [project.scripts]
 wai = "wai.cli:main"
