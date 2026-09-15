@@ -833,6 +833,15 @@ class K8sProvider:
     kubeconfigs: tuple[str, ...] = ()
     _client: K8sClient | None = field(default=None, repr=False)
 
+    def reset(self) -> None:
+        """Drop the cached client, so the next call reconnects.
+
+        Called on a context switch: the cached one holds a connection built for
+        the old context, and reusing it would send the next call to the cluster
+        the user just moved away from.
+        """
+        self._client = None
+
     async def get(self) -> tuple[K8sClient, str]:
         if self._client is None:
             from wai.cloud.kube import build_client, resolve_context

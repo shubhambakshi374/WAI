@@ -9,6 +9,7 @@ model could have recovered from by trying a different path.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -34,6 +35,24 @@ class CloudContext:
     kube_context: str | None = None
     protection: Any = None
     """A ``wai.cloud.base.ProtectionRules``."""
+    on_context_change: Callable[[str, str], None] | None = None
+    """Called after a switch, to persist it. Optional: a headless run that
+    should not write config simply leaves it unset."""
+
+    def switch_context(self, name: str, namespace: str = "") -> None:
+        """Point this session at another cluster.
+
+        The cached client has to go: it holds a connection built for the old
+        context, and reusing it would send the next call to the cluster the
+        user just moved away from.
+        """
+        self.kube_context = name
+        provider = self.k8s
+        if provider is not None:
+            provider.context = name
+            provider.reset()
+        if self.on_context_change is not None:
+            self.on_context_change(name, namespace)
 
 
 @dataclass

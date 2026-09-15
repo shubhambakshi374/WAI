@@ -579,3 +579,97 @@ class K8sWaitTool(K8sTool):
             summary="condition met" if satisfied else "timed out",
             is_error=not satisfied,
         )
+
+
+class K8sRolloutStatusTool(K8sTool):
+    name: ClassVar[str] = "k8s_rollout_status"
+    description: ClassVar[str] = (
+        "Where a rollout has got to, and the revisions available to roll back "
+        "to. Reading this needs no approval, which is why it is separate from "
+        "k8s_rollout — checking on a deploy should never prompt."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "description": "Deployment, StatefulSet or DaemonSet."},
+            "name": {"type": "string"},
+            "namespace": {"type": "string"},
+            "history": {"type": "boolean", "description": "Also list the retained revisions."},
+        },
+        "required": ["kind", "name"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        kind, name = str(args.get("kind", "")).strip(), str(args.get("name", "")).strip()
+        if not kind or not name:
+            return ToolOutcome.error("kind and name are required")
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, context_name = resolved
+        namespace = str(args.get("namespace") or "default")
+        api_version = await client.resolve_kind(kind, "")
+
+        try:
+            live = await client.get_one(api_version, kind, name, namespace)
+        except Exception as exc:
+            return ToolOutcome.error(f"{kind}/{name} not found: {exc}", summary="not found")
+
+        spec, status = live.get("spec") or {}, live.get("status") or {}
+        wanted = spec.get("replicas", 1)
+        lines = [f"{kind}/{name} in {namespace} ({context_name})"]
+        if spec.get("paused"):
+            lines.append("  PAUSED — resume it with k8s_rollout action=resume")
+        for label, key in (
+            ("desired", None),
+            ("updated", "updatedReplicas"),
+            ("ready", "readyReplicas"),
+            ("available", "availableReplicas"),
+            ("unavailable", "unavailableReplicas"),
+        ):
+            value = wanted if key is None else status.get(key, 0)
+            lines.append(f"  {label:<12} {value}")
+
+        observed = status.get("observedGeneration")
+        generation = (live.get("metadata") or {}).get("generation")
+        if observed is not None and generation is not None and observed < generation:
+            lines.append("  the controller has not yet observed the latest change")
+        complete = status.get("updatedReplicas") == wanted and status.get("readyReplicas") == wanted
+        lines.append(f"  {'rollout complete' if complete else 'rollout in progress'}")
+
+        if args.get("history"):
+            lines.extend(await self._history(client, kind, name, namespace))
+        return ToolOutcome(
+            content="\n".join(lines),
+            summary="complete" if complete else "in progress",
+        )
+
+    async def _history(self, client: Any, kind: str, name: str, namespace: str) -> list[str]:
+        """Revisions are ReplicaSets, which is also how `kubectl rollout undo`
+        finds them --- there is no history API to ask."""
+        if kind != "Deployment":
+            return ["  (revision history is only tracked for Deployments)"]
+        try:
+            sets = await client.list_kind("apps/v1", "ReplicaSet", namespace)
+        except Exception as exc:
+            return [f"  (could not read revisions: {exc})"]
+
+        rows = []
+        for entry in sets:
+            meta = entry.get("metadata") or {}
+            owners = meta.get("ownerReferences") or []
+            if not any(o.get("kind") == "Deployment" and o.get("name") == name for o in owners):
+                continue
+            revision = (meta.get("annotations") or {}).get("deployment.kubernetes.io/revision", "?")
+            images = [
+                str(c.get("image", ""))
+                for c in (((entry.get("spec") or {}).get("template") or {}).get("spec") or {}).get(
+                    "containers"
+                )
+                or []
+            ]
+            rows.append((revision, meta.get("name", ""), ", ".join(images)))
+        if not rows:
+            return ["  (no revisions retained)"]
+        rows.sort(key=lambda r: str(r[0]), reverse=True)
+        return ["  revisions:", *(f"    {rev:<4} {rs:<34} {img}" for rev, rs, img in rows)]

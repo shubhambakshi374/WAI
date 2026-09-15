@@ -317,6 +317,17 @@ def build_cloud_context(config: Config) -> CloudContext:
         from wai.cloud.k8s import K8sProvider
 
         provider = K8sProvider(context=settings.kube_context, kubeconfigs=kubeconfigs)
+
+    def remember(name: str, _namespace: str) -> None:
+        """Persist a switch the agent made, so --resume comes back to the same
+        cluster. Only the WAI-scoped selection: the kubeconfig is never
+        written from here, whatever kube_context_scope says --- a tool call is
+        not the place to retarget the user's other terminals."""
+        from wai.config import save_config
+
+        settings.kube_context = name
+        save_config(config)
+
     return CloudContext(
         k8s=provider,
         redact_secrets=settings.secret_redaction,
@@ -325,4 +336,5 @@ def build_cloud_context(config: Config) -> CloudContext:
         protection=ProtectionRules.build(
             settings.protected.patterns, settings.protected.accounts, settings.protected.mode
         ),
+        on_context_change=remember,
     )

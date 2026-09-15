@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from wai.cloud import k8s as k8s_api
-from wai.cloud.base import ProtectionRules
+from wai.cloud.base import ProtectionRules, Sensitivity
 from wai.cloud.k8s import MetricsUnavailable, build_graph, parse_cpu, parse_memory
 from wai.cloud.redact import MARKER
 from wai.core.visuals import Bars, ResourceGraph, Table, VisualGroup
@@ -719,9 +719,12 @@ class MutableClient(FakeClient):
         self.applied: list[tuple[dict[str, Any], bool]] = []
         self.deleted: list[tuple[str, bool]] = []
         self.patched: list[tuple[dict[str, Any], bool]] = []
+        self.replaced: list[tuple[str, bool]] = []
+        self.collections: list[tuple[str | None, bool]] = []
+        self.subresources: list[tuple[str, str, str, str, bool]] = []
         self.live = live
 
-    async def get_one(self, api_version, kind, name, namespace=None):  # type: ignore[no-untyped-def]
+    async def get_one(self, api_version, kind, name, namespace=None, *, subresource=""):  # type: ignore[no-untyped-def]
         if self.live is None:
             raise KeyError("not found")
         return self.live
@@ -734,13 +737,65 @@ class MutableClient(FakeClient):
         self.deleted.append((name, dry_run))
         return {}
 
-    async def patch(self, api_version, kind, name, patch, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+    async def patch(
+        self, api_version, kind, name, patch, namespace=None, *, dry_run=False, patch_type="merge"
+    ):  # type: ignore[no-untyped-def]
         self.patched.append((patch, dry_run))
         return {}
 
     @property
     def real_applies(self) -> list[dict[str, Any]]:
         return [body for body, dry in self.applied if not dry]
+
+    async def create(self, api_version, kind, body, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.created.append((kind, body, dry_run))
+        if kind.endswith("Review"):
+            return self.reviews.get(kind, {"status": {"allowed": False}})
+        return {"metadata": {"name": (body.get("metadata") or {}).get("name", "new")}}
+
+    async def replace(self, api_version, kind, name, body, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.replaced.append((name, dry_run))
+        return body
+
+    async def delete_collection(
+        self,
+        api_version,
+        kind,
+        namespace=None,
+        *,
+        label_selector=None,
+        field_selector=None,
+        dry_run=False,
+    ):  # type: ignore[no-untyped-def]
+        self.collections.append((label_selector, dry_run))
+        return {}
+
+    async def subresource(
+        self,
+        method,
+        api_version,
+        kind,
+        name,
+        subresource,
+        *,
+        namespace=None,
+        body=None,
+        dry_run=False,
+    ):  # type: ignore[no-untyped-def]
+        self.subresources.append((method, kind, name, subresource, dry_run))
+        return {"metadata": {"name": name}}
+
+    @property
+    def real_creates(self) -> list[str]:
+        return [kind for kind, _body, dry in self.created if not dry]
+
+    @property
+    def real_replaces(self) -> list[str]:
+        return [name for name, dry in self.replaced if not dry]
+
+    @property
+    def real_collections(self) -> list[str]:
+        return [sel for sel, dry in self.collections if not dry]
 
     @property
     def real_deletes(self) -> list[str]:
@@ -755,6 +810,13 @@ DEPLOY_LIVE: dict[str, Any] = {
     "kind": "Deployment",
     "metadata": {"name": "web", "namespace": "shop"},
     "spec": {"replicas": 2},
+}
+
+VERSIONED: dict[str, Any] = {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {"name": "web", "namespace": "shop", "resourceVersion": "42"},
+    "spec": {"replicas": 3},
 }
 
 MANIFEST: dict[str, Any] = {
@@ -786,6 +848,16 @@ def mutation_context(client, tmp_path, policy, patterns=("*prod*",)):  # type: i
         ("k8s_delete", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
         ("k8s_scale", {"kind": "Deployment", "name": "web", "replicas": 5, "namespace": "shop"}),
         ("k8s_rollout", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+        (
+            "k8s_patch",
+            {"kind": "Deployment", "name": "web", "namespace": "shop", "patch": {"spec": {}}},
+        ),
+        ("k8s_create", {"manifest": MANIFEST, "namespace": "shop"}),
+        ("k8s_replace", {"manifest": VERSIONED, "namespace": "shop"}),
+        (
+            "k8s_delete",
+            {"kind": "Deployment", "label_selector": "app=web", "namespace": "shop"},
+        ),
     ],
 )
 async def test_every_mutation_asks_before_acting(tmp_path, name, args) -> None:  # type: ignore[no-untyped-def]
@@ -807,6 +879,16 @@ async def test_every_mutation_asks_before_acting(tmp_path, name, args) -> None: 
         ("k8s_delete", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
         ("k8s_scale", {"kind": "Deployment", "name": "web", "replicas": 5, "namespace": "shop"}),
         ("k8s_rollout", {"kind": "Deployment", "name": "web", "namespace": "shop"}),
+        (
+            "k8s_patch",
+            {"kind": "Deployment", "name": "web", "namespace": "shop", "patch": {"spec": {}}},
+        ),
+        ("k8s_create", {"manifest": MANIFEST, "namespace": "shop"}),
+        ("k8s_replace", {"manifest": VERSIONED, "namespace": "shop"}),
+        (
+            "k8s_delete",
+            {"kind": "Deployment", "label_selector": "app=web", "namespace": "shop"},
+        ),
     ],
 )
 async def test_rejection_changes_nothing(tmp_path, name, args) -> None:  # type: ignore[no-untyped-def]
@@ -817,6 +899,10 @@ async def test_rejection_changes_nothing(tmp_path, name, args) -> None:  # type:
     assert client.real_applies == []
     assert client.real_deletes == []
     assert client.real_patches == []
+    assert client.real_creates == []
+    assert client.real_replaces == []
+    assert client.real_collections == []
+    assert client.subresources == [], "not even a subresource write"
 
 
 async def test_dry_run_precedes_the_real_apply(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -947,7 +1033,16 @@ async def test_apply_diff_ignores_server_churn(tmp_path) -> None:  # type: ignor
 
 async def test_mutating_tools_are_marked_as_such() -> None:
     mutating = {t.name for t in k8s_tools() if not t.read_only}
-    assert mutating == {"k8s_apply", "k8s_delete", "k8s_scale", "k8s_rollout"}
+    assert mutating == {
+        "k8s_apply",
+        "k8s_patch",
+        "k8s_create",
+        "k8s_replace",
+        "k8s_delete",
+        "k8s_scale",
+        "k8s_rollout",
+        "k8s_use_context",
+    }
 
 
 # ------------------------------------------------------ the client itself
@@ -1302,3 +1397,287 @@ async def test_every_new_read_tool_is_read_only() -> None:
             assert entry.read_only, f"{entry.name} must not need approval"
             names.discard(entry.name)
     assert not names, f"not registered: {names}"
+
+
+# ------------------------------------------------- the rest of the mutations
+
+
+async def test_patch_defaults_to_strategic_merge(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """kubectl edit uses strategic, and it is the one that edits a single
+    container rather than replacing the whole list."""
+    client = MutableClient(live=DEPLOY_LIVE)
+    captured: list[str] = []
+    original = client.patch
+
+    async def spy(*a: Any, **kw: Any) -> Any:
+        captured.append(kw.get("patch_type", "merge"))
+        return await original(*a, **kw)
+
+    client.patch = spy  # type: ignore[method-assign]
+    await tool("k8s_patch").run(
+        {"kind": "Deployment", "name": "web", "patch": {"spec": {}}},
+        mutation_context(client, tmp_path, approving()),
+    )
+    assert captured and all(c == "strategic" for c in captured)
+
+
+async def test_patch_rejects_an_unknown_patch_type_without_asking(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient(live=DEPLOY_LIVE)
+    policy = approving()
+    out = await tool("k8s_patch").run(
+        {"kind": "Deployment", "name": "web", "patch": {}, "patch_type": "telepathy"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert out.is_error
+    assert policy.seen == [], "a bad argument must not reach a prompt"
+
+
+async def test_json_patch_must_be_an_array(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    out = await tool("k8s_patch").run(
+        {"kind": "Deployment", "name": "web", "patch": {"a": 1}, "patch_type": "json"},
+        mutation_context(MutableClient(live=DEPLOY_LIVE), tmp_path, approving()),
+    )
+    assert out.is_error and "array" in out.content
+
+
+async def test_replace_refuses_without_a_resource_version(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Without it the API server happily overwrites a concurrent edit. The
+    point of replace over apply is that it fails loudly instead."""
+    policy = approving()
+    out = await tool("k8s_replace").run(
+        {"manifest": MANIFEST}, mutation_context(MutableClient(live=DEPLOY_LIVE), tmp_path, policy)
+    )
+    assert out.is_error
+    assert "resourceVersion" in out.content
+    assert policy.seen == []
+
+
+async def test_collection_delete_shows_the_objects_not_the_selector(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Approving `app=web` is not consent to delete whatever wears that label
+    today, so the prompt lists what actually matched."""
+    client = MutableClient({"Pod": [pod("web-1"), pod("web-2")]}, live=DEPLOY_LIVE)
+    policy = approving()
+    out = await tool("k8s_delete").run(
+        {"kind": "Pod", "label_selector": "app=web", "namespace": "shop"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert not out.is_error, out.content
+    diff = policy.seen[0].diff
+    assert "Pod/web-1" in diff and "Pod/web-2" in diff
+    assert client.real_collections == ["app=web"]
+
+
+async def test_collection_delete_is_classified_privileged(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """One call, an unbounded number of objects, and no per-object prompt."""
+    client = MutableClient({"Pod": [pod("web-1")]}, live=DEPLOY_LIVE)
+    policy = approving()
+    await tool("k8s_delete").run(
+        {"kind": "Pod", "label_selector": "app=web", "namespace": "shop"},
+        mutation_context(client, tmp_path, policy),
+    )
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED
+    assert request.needs_challenge
+    assert not request.may_grant_always
+
+
+async def test_collection_delete_with_no_matches_does_nothing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient({"Pod": []}, live=DEPLOY_LIVE)
+    policy = approving()
+    out = await tool("k8s_delete").run(
+        {"kind": "Pod", "label_selector": "app=nothing"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert not out.is_error
+    assert policy.seen == [], "nothing to delete, so nothing to ask about"
+    assert client.collections == []
+
+
+async def test_delete_refuses_a_kind_with_neither_name_nor_selector(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """There is deliberately no way to say `every Deployment`."""
+    policy = approving()
+    out = await tool("k8s_delete").run(
+        {"kind": "Deployment"}, mutation_context(MutableClient(live=DEPLOY_LIVE), tmp_path, policy)
+    )
+    assert out.is_error
+    assert policy.seen == []
+
+
+async def test_creating_a_token_says_it_outlives_the_session(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient(live=DEPLOY_LIVE)
+    policy = approving()
+    await tool("k8s_create").run(
+        {
+            "manifest": {"apiVersion": "v1", "kind": "ServiceAccount"},
+            "on": "builder",
+            "subresource": "token",
+            "namespace": "shop",
+        },
+        mutation_context(client, tmp_path, policy),
+    )
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED
+    assert "outlives this session" in request.recoverability
+    assert client.subresources == [("POST", "ServiceAccount", "builder", "token", False)]
+
+
+async def test_rollout_undo_restores_the_previous_replicaset_template(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def replicaset(name: str, revision: str, image: str) -> dict[str, Any]:
+        return {
+            "metadata": {
+                "name": name,
+                "namespace": "shop",
+                "annotations": {"deployment.kubernetes.io/revision": revision},
+                "ownerReferences": [{"kind": "Deployment", "name": "web"}],
+            },
+            "spec": {
+                "template": {
+                    "metadata": {"labels": {"app": "web", "pod-template-hash": "abc"}},
+                    "spec": {"containers": [{"name": "c", "image": image}]},
+                }
+            },
+        }
+
+    client = MutableClient(
+        {"ReplicaSet": [replicaset("web-1", "1", "app:v1"), replicaset("web-2", "2", "app:v2")]},
+        live=DEPLOY_LIVE,
+    )
+    out = await tool("k8s_rollout").run(
+        {"kind": "Deployment", "name": "web", "namespace": "shop", "action": "undo"},
+        mutation_context(client, tmp_path, approving()),
+    )
+    assert not out.is_error, out.content
+    template = client.real_patches[0]["spec"]["template"]
+    assert template["spec"]["containers"][0]["image"] == "app:v1", "the older revision"
+    assert "pod-template-hash" not in template["metadata"]["labels"], (
+        "the hash belongs to the old ReplicaSet; carrying it over makes the new one unselectable"
+    )
+
+
+async def test_rollout_undo_says_so_when_there_is_no_history(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient({"ReplicaSet": []}, live=DEPLOY_LIVE)
+    policy = approving()
+    out = await tool("k8s_rollout").run(
+        {"kind": "Deployment", "name": "web", "action": "undo"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert out.is_error and "nothing to roll back" in out.content
+    assert policy.seen == []
+
+
+async def test_rollout_pause_is_a_no_op_when_already_paused(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = MutableClient(live={**DEPLOY_LIVE, "spec": {"replicas": 2, "paused": True}})
+    policy = approving()
+    out = await tool("k8s_rollout").run(
+        {"kind": "Deployment", "name": "web", "action": "pause"},
+        mutation_context(client, tmp_path, policy),
+    )
+    assert not out.is_error and out.summary == "no change"
+    assert policy.seen == [], "nothing changes, so nothing to approve"
+
+
+async def test_rollout_status_needs_no_approval(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Checking on a deploy must never prompt --- which is why it is a
+    separate tool from the one that drives the rollout."""
+    client = FakeClient(
+        {
+            "Deployment": [
+                {
+                    "metadata": {"name": "web", "namespace": "shop", "generation": 2},
+                    "spec": {"replicas": 3},
+                    "status": {"updatedReplicas": 3, "readyReplicas": 3, "observedGeneration": 2},
+                }
+            ]
+        }
+    )
+    out = await tool("k8s_rollout_status").run(
+        {"kind": "Deployment", "name": "web", "namespace": "shop"},
+        context_for(client, tmp_path),
+    )
+    assert not out.is_error
+    assert out.summary == "complete"
+    assert tool("k8s_rollout_status").read_only
+
+
+# ------------------------------------------------------------ switching context
+
+
+def kubeconfig_at(path, contexts=("AKS_QAM", "AKS_EU_PROD")):  # type: ignore[no-untyped-def]
+    import yaml
+
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "v1",
+                "kind": "Config",
+                "current-context": contexts[0],
+                "contexts": [
+                    {"name": n, "context": {"cluster": n, "user": "u", "namespace": "default"}}
+                    for n in contexts
+                ],
+                "clusters": [{"name": n, "cluster": {"server": "https://x"}} for n in contexts],
+                "users": [{"name": "u", "user": {}}],
+            }
+        )
+    )
+    return path
+
+
+async def test_switching_context_asks_first(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """It changes where every later command lands, so it is never silent."""
+    monkeypatch.setenv("KUBECONFIG", str(kubeconfig_at(tmp_path / "kc")))
+    switched: list[tuple[str, str]] = []
+    policy = approving()
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(
+            protection=ProtectionRules(patterns=("*prod*",)),
+            kube_context="AKS_QAM",
+            on_context_change=lambda n, ns: switched.append((n, ns)),
+        ),
+    )
+    out = await tool("k8s_use_context").run({"context": "AKS_EU_PROD"}, ctx)
+    assert not out.is_error, out.content
+    assert len(policy.seen) == 1
+    assert switched == [("AKS_EU_PROD", "default")]
+
+
+async def test_switching_to_a_protected_context_demands_the_typed_challenge(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("KUBECONFIG", str(kubeconfig_at(tmp_path / "kc")))
+    policy = approving()
+    ctx = ToolContext(
+        workspace=Workspace(root=tmp_path),
+        approvals=policy,
+        cloud=CloudContext(
+            protection=ProtectionRules(patterns=("*prod*",)), kube_context="AKS_QAM"
+        ),
+    )
+    await tool("k8s_use_context").run({"context": "AKS_EU_PROD"}, ctx)
+    assert policy.seen[0].protected
+    assert policy.seen[0].needs_challenge
+
+
+async def test_switching_context_refuses_an_unknown_name(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("KUBECONFIG", str(kubeconfig_at(tmp_path / "kc")))
+    policy = approving()
+    ctx = ToolContext(workspace=Workspace(root=tmp_path), approvals=policy, cloud=CloudContext())
+    out = await tool("k8s_use_context").run({"context": "nope"}, ctx)
+    assert out.is_error
+    assert "AKS_QAM" in out.content, "name what is available"
+    assert policy.seen == []
+
+
+async def test_switching_context_drops_the_cached_client() -> None:
+    """The cached client holds a connection built for the old context; reusing
+    it would send the next call to the cluster you just left."""
+    from wai.cloud.k8s import K8sProvider
+
+    provider = K8sProvider(context="AKS_QAM")
+    provider._client = object()  # type: ignore[assignment]
+    cloud = CloudContext(k8s=provider, kube_context="AKS_QAM")
+    cloud.switch_context("AKS_EU_PROD", "default")
+    assert provider.context == "AKS_EU_PROD"
+    assert provider._client is None
