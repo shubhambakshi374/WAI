@@ -16,11 +16,12 @@ draw time.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.events import Click
 from textual.message import Message
@@ -28,7 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from wai.core.visuals import ResourceGraph, Visual
-from wai.render import DARK, LIGHT, Palette, render, renderable
+from wai.render import DARK, LIGHT, Palette, View, render, renderable
 from wai.render.capability import Support, resolve
 
 #: A cell is roughly twice as tall as it is wide, so an image asked for in
@@ -84,7 +85,10 @@ class CellMap(Static):
         depth = len(self.model.nodes) or 1
         return min(60, int(CELLS.node_height) * depth + 8)
 
+    can_focus = True
+
     def on_click(self, event: Click) -> None:
+        self.focus()
         if self._grid is None:
             return
         hit = self._grid.hit(event.x, event.y)
@@ -97,18 +101,33 @@ class ImageMap(Widget):
 
     DEFAULT_CSS = "ImageMap { height: auto; }"
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("plus,equals_sign,equal", "zoom_in", "Zoom in"),
+        Binding("minus,underscore", "zoom_out", "Zoom out"),
+        Binding("f,zero", "fit", "Fit"),
+        Binding("up", "pan(0,-40)", "Pan up", show=False),
+        Binding("down", "pan(0,40)", "Pan down", show=False),
+        Binding("left", "pan(-60,0)", "Pan left", show=False),
+        Binding("right", "pan(60,0)", "Pan right", show=False),
+    ]
+
+    can_focus = True
+
     def __init__(self, model: Visual, palette: Palette) -> None:
         super().__init__()
         self.model = model
         self.palette = palette
         self._rendered: Any = None
+        self.view = View()
 
     def compose(self) -> ComposeResult:
         from textual_image.widget import AutoImage
 
         width = max(240, (self.size.width or 80) * 8)
         height = max(120, int((self.size.height or 20) * 8 * CELL_ASPECT / 2))
-        self._rendered = render(self.model, size=(width, height), palette=self.palette)
+        self._rendered = render(
+            self.model, size=(width, height), palette=self.palette, view=self.view
+        )
         if self._rendered is None:
             yield from _text_view(self.model)
             return
@@ -124,6 +143,7 @@ class ImageMap(Widget):
         )
 
     def on_click(self, event: Click) -> None:
+        self.focus()
         if self._rendered is None:
             return
         scale_x = self._rendered.size[0] / max(1, self.size.width)
@@ -131,6 +151,35 @@ class ImageMap(Widget):
         hit = self._rendered.hit(event.x * scale_x, event.y * scale_y)
         if hit is not None:
             self.post_message(NodeSelected(hit.node_id, hit.label))
+
+    def _redraw(self, view: View) -> None:
+        """Re-render at the new view rather than scaling the bitmap, so text
+        stays as sharp zoomed in as it was fitted."""
+        self.view = view
+        self.remove_children()
+        self.mount_all(list(self.compose()))
+
+    def action_zoom_in(self) -> None:
+        self._redraw(self.view.zoomed(1.25))
+
+    def action_zoom_out(self) -> None:
+        self._redraw(self.view.zoomed(0.8))
+
+    def action_fit(self) -> None:
+        self._redraw(View())
+
+    def action_pan(self, dx: int, dy: int) -> None:
+        self._redraw(self.view.panned(-dx / self.view.scale, -dy / self.view.scale))
+
+    def on_mouse_scroll_down(self, event: Any) -> None:
+        if getattr(event, "ctrl", False):
+            event.stop()
+            self.action_zoom_out()
+
+    def on_mouse_scroll_up(self, event: Any) -> None:
+        if getattr(event, "ctrl", False):
+            event.stop()
+            self.action_zoom_in()
 
 
 def _fallback(model: Visual, palette: Palette) -> Widget:
@@ -173,3 +222,11 @@ class GraphicsPanel(Vertical):
             yield CellMap(self.model, self.palette)
         else:
             yield from _text_view(self.model)
+
+    def on_node_selected(self, message: NodeSelected) -> None:
+        """A click becomes a read. Nothing here can change anything: the detail
+        screen only ever runs k8s_get, which classifies READ."""
+        from wai.tui.screens.detail import NodeDetail
+
+        message.stop()
+        self.app.push_screen(NodeDetail(message.node_id, message.label))

@@ -1592,3 +1592,74 @@ async def test_graphics_command_rejects_a_mode_that_does_not_exist() -> None:
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
         assert "auto | image | cells | off" in _notices(pilot)
+
+
+async def test_clicking_a_node_opens_the_object(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Drill-down is the whole point of the hit map. It reaches k8s_get and
+    nothing else, so no approval is ever involved."""
+    monkeypatch.setattr("os.environ", APPLE)
+    from wai.tui.screens.detail import NodeDetail
+    from wai.tui.widgets.graphics import CellMap, GraphicsPanel, NodeSelected
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        panel = GraphicsPanel(_graph_visual(), setting="auto")
+        await app.screen.mount(panel)
+        await pilot.pause()
+        panel.query_one(CellMap).render()
+        panel.post_message(NodeSelected("Deployment/shop/web", "Deployment/web"))
+        await pilot.pause()
+        assert isinstance(app.screen, NodeDetail)
+
+
+async def test_the_detail_screen_reports_an_unparseable_identity() -> None:
+    from textual.widgets import Static
+
+    from wai.tui.screens.detail import NodeDetail
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.push_screen(NodeDetail("nonsense", "nonsense"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        body = app.screen.query_one("#body", Static)
+        assert "not a Kind/namespace/name" in str(body.content)
+
+
+async def test_the_detail_screen_says_so_when_kubernetes_is_absent() -> None:
+    from textual.widgets import Static
+
+    from wai.tools import ToolRegistry
+    from wai.tui.screens.detail import NodeDetail
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry = ToolRegistry([])
+        app.push_screen(NodeDetail("Deployment/shop/web", "Deployment/web"))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        body = app.screen.query_one("#body", Static)
+        assert "not available" in str(body.content)
+
+
+async def test_zoom_and_pan_re_render_rather_than_scale(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Re-rendering is why text stays sharp zoomed in. Scaling a bitmap would
+    blur exactly the labels the map exists to show."""
+    monkeypatch.setattr("os.environ", KITTY)
+    from wai.render import View
+    from wai.tui.widgets.graphics import ImageMap
+
+    widget = ImageMap(_graph_visual(), __import__("wai.render", fromlist=["DARK"]).DARK)
+    assert widget.view == View()
+
+    widget.view = widget.view.zoomed(1.25)
+    assert widget.view.scale > 1.0
+
+    before = widget.view
+    widget.view = widget.view.panned(-60 / before.scale, 0)
+    assert widget.view.offset[0] < 0
+
+    widget.view = View()
+    assert widget.view.offset == (0.0, 0.0), "fit returns to the origin"

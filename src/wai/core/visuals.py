@@ -198,7 +198,11 @@ KIND_MARKS: dict[str, str] = {
 
 class GraphNode(BaseModel):
     id: str
-    """Stable identity: `apps/v1/Deployment/default/web`."""
+    """Stable identity: `Kind/namespace/name`, e.g. `Deployment/shop/web`.
+
+    Built by ``cloud.k8s.node_id``. Deliberately not apiVersion-qualified:
+    an apiVersion contains a slash of its own, and the id has to stay
+    splittable by a front end turning a click into a lookup."""
     kind: str
     name: str
     namespace: str = ""

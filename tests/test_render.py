@@ -34,8 +34,11 @@ from wai.render import DARK, LIGHT, Hit, View, render, renderable
 
 
 def node(kind: str, name: str, status: str = "", namespace: str = "shop") -> GraphNode:
+    # Kind/namespace/name --- what cloud.k8s.node_id actually builds. An earlier
+    # version of these tests invented an apiVersion-qualified id the producer
+    # never emits, which would have hidden a drill-down that could not parse.
     return GraphNode(
-        id=f"v1/{kind}/{namespace}/{name}",
+        id=f"{kind}/{namespace}/{name}",
         kind=kind,
         name=name,
         namespace=namespace,
@@ -180,8 +183,10 @@ def test_hit_node_ids_are_what_a_drill_down_needs(graph: ResourceGraph) -> None:
     front end can build a k8s_get from a click without parsing pixels."""
     out = render(graph, size=(820, 420))
     assert out is not None
+    from wai.cloud.k8s import split_node_id
+
     for hit in out.hits:
-        assert hit.node_id.count("/") == 3
+        assert split_node_id(hit.node_id) is not None, hit.node_id
         assert hit.label
 
 
@@ -313,7 +318,7 @@ def test_an_edge_naming_a_missing_node_is_ignored() -> None:
     present = node("Pod", "a")
     orphan = ResourceGraph(
         nodes=[present],
-        edges=[GraphEdge(source=present.id, target="v1/Pod/shop/gone", relation="selects")],
+        edges=[GraphEdge(source=present.id, target="Pod/shop/gone", relation="selects")],
     )
     out = render(orphan, size=(480, 240))
     assert out is not None
@@ -464,7 +469,7 @@ def test_both_back_ends_are_the_same_engine(graph: ResourceGraph) -> None:
             assert boxes[parent][1] < boxes[child][1], f"{parent} must sit above {child}"
 
         siblings = sorted(
-            (node for node in graph.nodes if owns.get(node.id) == "v1/ReplicaSet/shop/web-7d9"),
+            (node for node in graph.nodes if owns.get(node.id) == "ReplicaSet/shop/web-7d9"),
             key=lambda node: node.name,
         )
         positions = [boxes[node.id][0] for node in siblings]
