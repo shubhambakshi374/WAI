@@ -338,3 +338,155 @@ def test_hit_regions_line_up_with_the_hit_helper(graph: ResourceGraph) -> None:
     assert out is not None
     assert isinstance(out.hits[0], Hit)
     assert out.size == (820, 420)
+
+
+# ------------------------------------------------------- the cell back end
+
+# Terminal.app speaks neither Kitty's protocol nor Sixel, and the halfcell
+# fallback preserves a graph's shape while turning every label into mush. So
+# the same layout is drawn with box-drawing characters, where text stays text.
+
+
+def test_the_cell_map_draws_every_node(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    grid = draw_graph(graph, width=120, height=30, palette=DARK)
+    assert len(grid.hits) == len(graph.nodes)
+    text = grid.to_text()
+    for node in graph.nodes:
+        assert node.name[:8] in text, f"{node.name} missing from the map"
+
+
+def test_cell_hits_are_in_columns_and_rows_not_pixels(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    grid = draw_graph(graph, width=120, height=30, palette=DARK)
+    for hit in grid.hits:
+        left, top, right, bottom = hit.box
+        assert 0 <= left <= right < 120
+        assert 0 <= top <= bottom < 30
+        assert bottom - top == 3, "a node is four rows: border, kind, name, border"
+
+
+def test_a_cell_click_resolves_to_the_node_under_it(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    grid = draw_graph(graph, width=120, height=30, palette=DARK)
+    for hit in grid.hits:
+        left, top, right, bottom = hit.box
+        found = grid.hit((left + right) // 2, (top + bottom) // 2)
+        assert found is not None and found.node_id == hit.node_id
+
+
+def test_cell_hit_regions_do_not_overlap(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    grid = draw_graph(graph, width=120, height=30, palette=DARK)
+    boxes = [hit.box for hit in grid.hits]
+    for index, (ax1, ay1, ax2, ay2) in enumerate(boxes):
+        for bx1, by1, bx2, by2 in boxes[index + 1 :]:
+            assert not (ax1 <= bx2 and bx1 <= ax2 and ay1 <= by2 and by1 <= ay2)
+
+
+def test_cross_relations_are_listed_because_cells_cannot_draw_arcs(
+    graph: ResourceGraph,
+) -> None:
+    """The image back end arcs them over the tree. A character grid has nowhere
+    to route a curve, so they are named instead --- losing them entirely would
+    reduce the graph to a tree."""
+    from wai.render.cells import draw_graph
+
+    text = draw_graph(graph, width=120, height=30, palette=DARK).to_text()
+    assert "relationships" in text
+    assert "selects" in text
+
+
+def test_the_cell_map_is_deterministic(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    first = draw_graph(graph, width=120, height=30, palette=DARK)
+    second = draw_graph(graph, width=120, height=30, palette=DARK)
+    assert first.to_text() == second.to_text()
+    assert first.hits == second.hits
+
+
+def test_a_narrow_terminal_does_not_crash(graph: ResourceGraph) -> None:
+    from wai.render.cells import draw_graph
+
+    for width in (20, 40, 60):
+        grid = draw_graph(graph, width=width, height=24, palette=DARK)
+        for row in grid.rows:
+            assert len(row) == width, "nothing may be written past the edge"
+
+
+def test_an_empty_graph_says_so_rather_than_drawing_nothing() -> None:
+    from wai.render.cells import draw_graph
+
+    grid = draw_graph(
+        ResourceGraph(title="empty", nodes=[], edges=[]), width=60, height=10, palette=DARK
+    )
+    assert "no resources found" in grid.to_text()
+    assert grid.hits == ()
+
+
+def test_status_is_kept_and_the_name_gives_way_to_it() -> None:
+    """The same collision the image back end had: both share a line, so the
+    status takes its width out of the name's budget first."""
+    from wai.render.cells import draw_graph
+
+    long_name = node("Pod", "a-very-long-pod-name-indeed", "CrashLoopBackOff")
+    grid = draw_graph(ResourceGraph(nodes=[long_name], edges=[]), width=60, height=12, palette=DARK)
+    text = grid.to_text()
+    assert "CrashLoop" in text, "the status survives"
+    assert "a-very-long-pod-name-indeed" not in text, "the name gave way"
+
+
+def test_both_back_ends_are_the_same_engine(graph: ResourceGraph) -> None:
+    """The architectural claim, asserted rather than assumed.
+
+    Not that the two produce identical positions --- they wrap to their own
+    surface's aspect, and adapting is the point. What must hold in both is the
+    structure the shared engine computes: a parent sits above its children, and
+    siblings run left to right in the same order.
+    """
+    from wai.render.cells import draw_graph as draw_cells
+
+    image = render(graph, size=(900, 460))
+    cells = draw_cells(graph, width=120, height=30, palette=DARK)
+    assert image is not None
+
+    owns = {edge.target: edge.source for edge in graph.edges if edge.relation == "owns"}
+    for boxes in (
+        {hit.node_id: hit.box for hit in image.hits},
+        {hit.node_id: hit.box for hit in cells.hits},
+    ):
+        for child, parent in owns.items():
+            assert boxes[parent][1] < boxes[child][1], f"{parent} must sit above {child}"
+
+        siblings = sorted(
+            (node for node in graph.nodes if owns.get(node.id) == "v1/ReplicaSet/shop/web-7d9"),
+            key=lambda node: node.name,
+        )
+        positions = [boxes[node.id][0] for node in siblings]
+        assert positions == sorted(positions), "siblings run left to right by name"
+
+
+def test_the_layout_engine_is_shared_not_copied() -> None:
+    """Both back ends import the same module. If one ever grows its own
+    forest-building or placement, this is what notices."""
+    import ast
+    from pathlib import Path
+
+    import wai.render
+
+    root = Path(wai.render.__file__).parent
+    for name in ("graph.py", "cells.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
+        imported = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert "wai.render.layout" in imported, f"{name} should use the shared layout"
+        source = (root / name).read_text(encoding="utf-8")
+        assert "def forest(" not in source, f"{name} reimplements forest()"
