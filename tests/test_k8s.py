@@ -918,3 +918,167 @@ async def test_apply_diff_ignores_server_churn(tmp_path) -> None:  # type: ignor
 async def test_mutating_tools_are_marked_as_such() -> None:
     mutating = {t.name for t in k8s_tools() if not t.read_only}
     assert mutating == {"k8s_apply", "k8s_delete", "k8s_scale", "k8s_rollout"}
+
+
+# ------------------------------------------------------ the client itself
+
+# Everything above drives a fake ``K8sClient``. These drive the real one
+# against a fake *dynamic* client, because the operations added for the full
+# API surface carry real logic --- patch semantics, the collection-delete
+# guard, non-JSON responses --- and a fake K8sClient would assert nothing.
+
+
+class FakeResponse:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
+class FakeApiClient:
+    def __init__(self, responses: dict[str, bytes] | None = None) -> None:
+        self.responses = responses or {}
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def call_api(self, path: str, method: str, **kw: Any) -> FakeResponse:
+        self.calls.append((method, path, kw.get("body")))
+        return FakeResponse(self.responses.get(path, b'{"ok": true}'))
+
+
+class FakeResource:
+    def __init__(self, recorder: list[tuple[str, dict[str, Any]]], *, namespaced: bool = True):
+        self.recorder = recorder
+        self.namespaced = namespaced
+        self.name = "deployments"
+
+    def path(self, name: str | None = None, namespace: str | None = None) -> str:
+        base = "/apis/apps/v1"
+        if namespace:
+            base += f"/namespaces/{namespace}"
+        base += f"/{self.name}"
+        return f"{base}/{name}" if name else base
+
+    def _record(self, verb: str, **kw: Any) -> dict[str, Any]:
+        self.recorder.append((verb, kw))
+        return {"metadata": {"name": kw.get("name", "web")}}
+
+    def patch(self, **kw: Any) -> dict[str, Any]:
+        return self._record("patch", **kw)
+
+    def create(self, **kw: Any) -> dict[str, Any]:
+        return self._record("create", **kw)
+
+    def replace(self, **kw: Any) -> dict[str, Any]:
+        return self._record("replace", **kw)
+
+    def delete(self, **kw: Any) -> dict[str, Any]:
+        return self._record("delete", **kw)
+
+
+class FakeResources:
+    def __init__(self, resource: FakeResource) -> None:
+        self.resource = resource
+
+    def get(self, **kw: Any) -> FakeResource:
+        return self.resource
+
+
+class FakeDynamic:
+    def __init__(self, *, responses: dict[str, bytes] | None = None, namespaced: bool = True):
+        self.recorder: list[tuple[str, dict[str, Any]]] = []
+        self.resource = FakeResource(self.recorder, namespaced=namespaced)
+        self.resources = FakeResources(self.resource)
+        self.client = FakeApiClient(responses)
+
+
+def real_client(**kw: Any) -> tuple[k8s_api.K8sClient, FakeDynamic]:
+    dynamic = FakeDynamic(**kw)
+    return k8s_api.K8sClient(dynamic=dynamic, context="AKS_QAM"), dynamic
+
+
+@pytest.mark.parametrize(
+    ("patch_type", "content_type"),
+    [
+        ("merge", "application/merge-patch+json"),
+        ("strategic", "application/strategic-merge-patch+json"),
+        ("json", "application/json-patch+json"),
+    ],
+)
+async def test_patch_sends_the_content_type_the_caller_asked_for(
+    patch_type: str, content_type: str
+) -> None:
+    """Not interchangeable: a merge patch replaces spec.containers wholesale
+    where a strategic one edits a single container in place."""
+    client, dynamic = real_client()
+    await client.patch("apps/v1", "Deployment", "web", {"spec": {}}, "shop", patch_type=patch_type)
+    verb, kwargs = dynamic.recorder[0]
+    assert verb == "patch"
+    assert kwargs["content_type"] == content_type
+
+
+async def test_patch_rejects_an_unknown_patch_type_before_calling_the_server() -> None:
+    client, dynamic = real_client()
+    with pytest.raises(ValueError, match="unknown patch type"):
+        await client.patch("apps/v1", "Deployment", "web", {}, "shop", patch_type="telepathy")
+    assert dynamic.recorder == [], "nothing must reach the API server"
+
+
+async def test_collection_delete_refuses_without_a_selector() -> None:
+    """An unfiltered deletecollection removes every object of the kind in
+    scope. That must not be expressible by leaving an argument out."""
+    client, dynamic = real_client()
+    with pytest.raises(ValueError, match="requires a label or field selector"):
+        await client.delete_collection("apps/v1", "Deployment", "shop")
+    assert dynamic.recorder == []
+
+
+async def test_collection_delete_passes_the_selector_through() -> None:
+    client, dynamic = real_client()
+    await client.delete_collection("apps/v1", "Deployment", "shop", label_selector="app=web")
+    verb, kwargs = dynamic.recorder[0]
+    assert verb == "delete"
+    assert kwargs["label_selector"] == "app=web"
+    assert "name" not in kwargs, "a collection delete names no single object"
+
+
+async def test_dry_run_is_a_server_side_query_parameter() -> None:
+    client, dynamic = real_client()
+    await client.create(
+        "apps/v1", "Deployment", {"metadata": {"name": "web"}}, "shop", dry_run=True
+    )
+    _, kwargs = dynamic.recorder[0]
+    assert kwargs["query_params"] == [("dryRun", "All")]
+
+
+async def test_raw_returns_text_when_the_response_is_not_json() -> None:
+    """/healthz answers `ok` and /metrics answers Prometheus text. Neither is
+    JSON, and neither should raise."""
+    client, _ = real_client(responses={"/healthz": b"ok"})
+    assert await client.raw("GET", "/healthz") == {"raw": "ok"}
+
+
+async def test_raw_parses_json_when_it_is_json() -> None:
+    client, _ = real_client(responses={"/version": b'{"gitVersion": "v1.29.4"}'})
+    assert (await client.raw("GET", "/version"))["gitVersion"] == "v1.29.4"
+
+
+async def test_subresource_builds_the_path_under_the_object() -> None:
+    client, dynamic = real_client()
+    await client.subresource(
+        "POST", "v1", "Pod", "web-1", "eviction", namespace="shop", body={"kind": "Eviction"}
+    )
+    method, path, body = dynamic.client.calls[0]
+    assert method == "POST"
+    assert path == "/apis/apps/v1/namespaces/shop/deployments/web-1/eviction"
+    assert body == {"kind": "Eviction"}
+
+
+async def test_subresource_omits_the_namespace_for_a_cluster_scoped_kind() -> None:
+    client, dynamic = real_client(namespaced=False)
+    await client.subresource("GET", "v1", "Node", "node-7", "status", namespace="shop")
+    _, path, _ = dynamic.client.calls[0]
+    assert "/namespaces/" not in path
+
+
+async def test_get_one_with_a_subresource_goes_through_the_subresource_path() -> None:
+    client, dynamic = real_client()
+    await client.get_one("apps/v1", "Deployment", "web", "shop", subresource="scale")
+    assert dynamic.client.calls[0][1].endswith("/web/scale")

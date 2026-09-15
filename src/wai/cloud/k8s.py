@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +47,19 @@ TOPOLOGY_KINDS: tuple[tuple[str, str], ...] = (
 
 DEFAULT_LIMIT = 500
 DISCOVERY_TIMEOUT = 30.0
+
+#: The three patch semantics, which are not interchangeable. A strategic merge
+#: knows ``spec.containers`` is keyed by name and edits one entry; a plain merge
+#: replaces the whole list. Picking the wrong one deletes containers quietly.
+PATCH_TYPES = {
+    "merge": "application/merge-patch+json",
+    "strategic": "application/strategic-merge-patch+json",
+    "json": "application/json-patch+json",
+}
+
+#: Nothing streams forever. A watch that never returns would hold a worker and
+#: a turn open indefinitely, so every one of them is bounded.
+MAX_WATCH_SECONDS = 600
 
 
 class MetricsUnavailable(RuntimeError):
@@ -242,17 +257,29 @@ class K8sClient:
         api_version: str,
         kind: str,
         name: str,
-        patch: dict[str, Any],
+        patch: dict[str, Any] | list[dict[str, Any]],
         namespace: str | None = None,
         *,
         dry_run: bool = False,
+        patch_type: str = "merge",
     ) -> dict[str, Any]:
+        """``merge``, ``strategic`` or ``json``.
+
+        The three are not interchangeable. A strategic merge patch understands
+        that ``spec.containers`` is keyed by name and edits one entry in place;
+        a plain merge patch replaces the whole list. Getting that wrong silently
+        deletes containers, so the caller says which it means.
+        """
+        content_type = PATCH_TYPES.get(patch_type)
+        if content_type is None:
+            raise ValueError(f"unknown patch type {patch_type!r}; use {', '.join(PATCH_TYPES)}")
+
         def _do() -> dict[str, Any]:
             resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
             kwargs: dict[str, Any] = {
                 "name": name,
                 "body": patch,
-                "content_type": "application/merge-patch+json",
+                "content_type": content_type,
             }
             if namespace:
                 kwargs["namespace"] = namespace
@@ -263,9 +290,108 @@ class K8sClient:
 
         return await asyncio.to_thread(_do)
 
-    async def get_one(
-        self, api_version: str, kind: str, name: str, namespace: str | None = None
+    async def create(
+        self,
+        api_version: str,
+        kind: str,
+        body: dict[str, Any],
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
+        """Create-only. Unlike apply this fails on an existing object, which is
+        what you want for ``generateName`` and for anything that must not
+        silently adopt something already there."""
+
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {"body": body}
+            if namespace:
+                kwargs["namespace"] = namespace
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.create(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result)
+
+        return await asyncio.to_thread(_do)
+
+    async def replace(
+        self,
+        api_version: str,
+        kind: str,
+        name: str,
+        body: dict[str, Any],
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Full-object PUT. Requires metadata.resourceVersion, so it fails
+        rather than clobbering a concurrent edit."""
+
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {"name": name, "body": body}
+            if namespace:
+                kwargs["namespace"] = namespace
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.replace(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result)
+
+        return await asyncio.to_thread(_do)
+
+    async def delete_collection(
+        self,
+        api_version: str,
+        kind: str,
+        namespace: str | None = None,
+        *,
+        label_selector: str | None = None,
+        field_selector: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Delete everything matching a selector, in one call.
+
+        Deliberately refuses an empty selector: ``deletecollection`` with no
+        filter removes every object of the kind in scope, and that is never
+        something a model should be able to express by omission.
+        """
+        if not label_selector and not field_selector:
+            raise ValueError(
+                "delete_collection requires a label or field selector; "
+                "an unfiltered collection delete removes everything of that kind"
+            )
+
+        def _do() -> dict[str, Any]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            kwargs: dict[str, Any] = {}
+            if namespace:
+                kwargs["namespace"] = namespace
+            if label_selector:
+                kwargs["label_selector"] = label_selector
+            if field_selector:
+                kwargs["field_selector"] = field_selector
+            if dry_run:
+                kwargs["query_params"] = [("dryRun", "All")]
+            result = resource.delete(**kwargs)
+            return dict(result.to_dict() if hasattr(result, "to_dict") else result or {})
+
+        return await asyncio.to_thread(_do)
+
+    async def get_one(
+        self,
+        api_version: str,
+        kind: str,
+        name: str,
+        namespace: str | None = None,
+        *,
+        subresource: str = "",
+    ) -> dict[str, Any]:
+        if subresource:
+            return await self.subresource(
+                "GET", api_version, kind, name, subresource, namespace=namespace
+            )
+
         def _do() -> dict[str, Any]:
             resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
             kwargs: dict[str, Any] = {"name": name}
@@ -275,6 +401,189 @@ class K8sClient:
             return dict(result.to_dict() if hasattr(result, "to_dict") else result)
 
         return await asyncio.to_thread(_do)
+
+    async def subresource(
+        self,
+        method: str,
+        api_version: str,
+        kind: str,
+        name: str,
+        subresource: str,
+        *,
+        namespace: str | None = None,
+        body: dict[str, Any] | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """status, scale, eviction, token, approval, and anything else.
+
+        Routed through the resource's own path rather than through discovery's
+        ``subresources`` map: a CRD's subresources are not always advertised,
+        and an operation that exists but is not listed should still be reachable.
+        """
+
+        def _path() -> str:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            base = resource.path(name=name, namespace=namespace if resource.namespaced else None)
+            return f"{base}/{subresource.strip('/')}"
+
+        path = await asyncio.to_thread(_path)
+        params: dict[str, Any] = {}
+        if dry_run:
+            params["query_params"] = [("dryRun", "All")]
+        return await self.raw(method, path, body=body, **params)
+
+    async def raw(
+        self, method: str, path: str, *, body: dict[str, Any] | None = None, **params: Any
+    ) -> dict[str, Any]:
+        """Any API path at all --- ``/healthz``, ``/version``, ``/metrics``, an
+        aggregated API, a subresource. The escape hatch that means "no
+        Kubernetes API is out of reach" is literally true.
+
+        A non-JSON body (``/healthz`` answers ``ok``, ``/metrics`` answers
+        Prometheus text) comes back under ``{"raw": ...}`` rather than raising.
+        """
+        import json
+
+        def _do() -> dict[str, Any]:
+            response = self.dynamic.client.call_api(
+                path,
+                method.upper(),
+                auth_settings=["BearerToken"],
+                _preload_content=False,
+                _return_http_data_only=True,
+                body=body,
+                **params,
+            )
+            data = response.data
+            text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return {"raw": text}
+            return parsed if isinstance(parsed, dict) else {"raw": parsed}
+
+        return await asyncio.to_thread(_do)
+
+    # -------------------------------------------------------------- waiting
+
+    async def watch_until(
+        self,
+        api_version: str,
+        kind: str,
+        namespace: str | None,
+        ready: Callable[[dict[str, Any]], bool],
+        *,
+        name: str | None = None,
+        label_selector: str | None = None,
+        timeout_seconds: float = 120.0,
+    ) -> tuple[bool, list[dict[str, Any]], str]:
+        """Watch until ``ready`` says so, or the clock runs out.
+
+        Returns ``(satisfied, transitions, why)``. Bounded twice over: the
+        server-side ``timeout`` parameter and our own wall clock, because a
+        dropped connection can leave the SDK's generator blocked with the
+        server-side timer never firing.
+
+        The transitions are what makes a timeout useful --- "not ready after
+        120s" is not a diagnosis, "pulled the image, then CrashLoopBackOff
+        three times" is.
+        """
+        limit = min(float(timeout_seconds), MAX_WATCH_SECONDS)
+        transitions: list[dict[str, Any]] = []
+
+        def _watch() -> tuple[bool, str]:
+            resource = self.dynamic.resources.get(api_version=api_version, kind=kind)
+            stream = self.dynamic.watch(
+                resource,
+                namespace=namespace,
+                name=name,
+                label_selector=label_selector,
+                timeout=int(limit),
+            )
+            try:
+                for event in stream:
+                    raw = event.get("object")
+                    obj = raw.to_dict() if hasattr(raw, "to_dict") else dict(raw or {})
+                    meta = obj.get("metadata") or {}
+                    transitions.append(
+                        {
+                            "type": event.get("type", ""),
+                            "name": meta.get("name", ""),
+                            "status": status_for(obj.get("kind", kind), obj),
+                        }
+                    )
+                    if ready(obj):
+                        return True, "the condition was met"
+                    if len(transitions) >= DEFAULT_LIMIT:
+                        return False, "gave up after 500 events without the condition being met"
+            finally:
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    close()
+            return False, f"the condition was not met within {limit:g}s"
+
+        try:
+            satisfied, why = await asyncio.wait_for(asyncio.to_thread(_watch), timeout=limit + 15)
+        except TimeoutError:
+            return False, transitions, f"the watch did not return within {limit:g}s"
+        return satisfied, transitions, why
+
+    # -------------------------------------------------------------- streams
+
+    async def exec_pod(
+        self,
+        name: str,
+        namespace: str,
+        command: list[str],
+        *,
+        container: str | None = None,
+        stdin: str | None = None,
+        timeout_seconds: float = 60.0,
+    ) -> tuple[str, str]:
+        """Run a command in a container. Returns ``(stdout, stderr)``.
+
+        No TTY: a tool call is request/response, and a PTY here would give the
+        model an interactive shell it has no way to drive. The command is an
+        argv list, never a string --- so the model cannot smuggle a pipeline or
+        a second command past the approval prompt it already showed the user.
+        """
+        from kubernetes.stream import stream as k8s_stream
+
+        def _run() -> tuple[str, str]:
+            from kubernetes import client as kube_client
+
+            core = kube_client.CoreV1Api(self.dynamic.client)
+            kwargs: dict[str, Any] = {
+                "command": command,
+                "stderr": True,
+                "stdout": True,
+                "stdin": stdin is not None,
+                "tty": False,
+                "_preload_content": False,
+            }
+            if container:
+                kwargs["container"] = container
+            channel = k8s_stream(core.connect_get_namespaced_pod_exec, name, namespace, **kwargs)
+            out: list[str] = []
+            err: list[str] = []
+            try:
+                if stdin is not None:
+                    channel.write_stdin(stdin)
+                deadline = time.monotonic() + timeout_seconds
+                while channel.is_open():
+                    if time.monotonic() > deadline:
+                        err.append(f"\n[wai: timed out after {timeout_seconds:g}s]")
+                        break
+                    channel.update(timeout=1)
+                    if channel.peek_stdout():
+                        out.append(channel.read_stdout())
+                    if channel.peek_stderr():
+                        err.append(channel.read_stderr())
+            finally:
+                channel.close()
+            return "".join(out), "".join(err)
+
+        return await asyncio.to_thread(_run)
 
     async def metrics(self, kind: str, namespace: str | None = None) -> list[dict[str, Any]]:
         if not await self.api_available(METRICS_API):
