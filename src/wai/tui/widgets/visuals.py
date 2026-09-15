@@ -99,13 +99,13 @@ class SeriesView(Vertical):
 
     def compose(self) -> ComposeResult:
         if self.model.title:
-            yield Label(self.model.title)
+            yield Label(self.model.title, markup=False)
         if self.model.points:
             yield Sparkline(self.model.points)
         else:
             yield Label("(no data)")
         if self.model.caption:
-            yield Label(self.model.caption)
+            yield Label(self.model.caption, markup=False)
 
 
 class TableView(Vertical):
@@ -120,17 +120,19 @@ class TableView(Vertical):
 
     def compose(self) -> ComposeResult:
         if self.model.title:
-            yield Label(self.model.title)
+            yield Label(self.model.title, markup=False)
         table: DataTable[str] = DataTable(zebra_stripes=True, cursor_type="row")
         yield table
         if self.model.caption:
-            yield Label(self.model.caption)
+            yield Label(self.model.caption, markup=False)
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns(*self.model.columns)
         for row in self.model.rows[:200]:
-            table.add_row(*[str(cell) for cell in row])
+            # Text(), not str: a cell is cluster output --- a k8s_events message
+            # routinely contains brackets, which DataTable would parse as markup.
+            table.add_row(*[Text(str(cell)) for cell in row])
 
 
 class GaugeView(Static):
@@ -192,7 +194,7 @@ def build_view(model: Visual) -> Static | Vertical:
             return GraphView(model)
         case VisualGroup():
             return GroupView(model)
-    return Static(str(model))
+    return Static(str(model), markup=False)
 
 
 class GroupView(Vertical):
@@ -204,7 +206,7 @@ class GroupView(Vertical):
 
     def compose(self) -> ComposeResult:
         if self.model.title:
-            yield Label(self.model.title)
+            yield Label(self.model.title, markup=False)
         for item in self.model.items:
             yield build_view(item)
 

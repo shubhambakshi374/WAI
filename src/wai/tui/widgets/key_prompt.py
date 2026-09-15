@@ -34,7 +34,7 @@ class KeyPrompt(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f"API key for {self.provider}", classes="title")
+            yield Label(f"API key for {self.provider}", classes="title", markup=False)
             yield Input(password=True, placeholder="paste and press enter", id="key")
             yield Label("Stored in your OS keyring, never on disk.", classes="hint")
 
@@ -51,10 +51,10 @@ class KeyPrompt(ModalScreen[bool]):
         try:
             set_api_key(self.provider, key)
         except Exception as exc:
-            self.notify(f"Could not store the key: {exc}", severity="error")
+            self.notify(f"Could not store the key: {exc}", severity="error", markup=False)
             self.dismiss(False)
             return
-        self.notify(f"Stored the {self.provider} key in your keyring.")
+        self.notify(f"Stored the {self.provider} key in your keyring.", markup=False)
         self.dismiss(True)
 
     def action_cancel(self) -> None:

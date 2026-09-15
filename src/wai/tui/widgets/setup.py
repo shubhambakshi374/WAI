@@ -125,6 +125,7 @@ class SetupWizard(ModalScreen[bool]):
                         f"{self.provider} uses its cloud credential chain "
                         "(AWS_PROFILE, instance roles) rather than an API key.",
                         classes="hint",
+                        markup=False,
                     )
                 )
                 nxt.label = "Check credentials"
@@ -134,7 +135,7 @@ class SetupWizard(ModalScreen[bool]):
                 self.query_one("#key", Input).focus()
                 nxt.label = "Check key"
             if self.problem:
-                await body.mount(Label(self.problem, classes="problem"))
+                await body.mount(Label(self.problem, classes="problem", markup=False))
 
         elif self.step is Step.ENDPOINT:
             label.update("2 of 4 — which server?")
@@ -143,7 +144,7 @@ class SetupWizard(ModalScreen[bool]):
                 Input(placeholder="…or a URL, e.g. https://vllm.internal:8000", id="url")
             )
             if self.problem:
-                await body.mount(Label(self.problem, classes="problem"))
+                await body.mount(Label(self.problem, classes="problem", markup=False))
             nxt.label = "Use this"
             self.find_endpoints()
 
