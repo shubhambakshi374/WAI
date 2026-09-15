@@ -723,3 +723,66 @@ def test_allow_writes_off_removes_the_tool_as_well() -> None:
 def test_only_the_write_tool_is_mutating() -> None:
     mutating = {t.name for t in aws_tools() if not t.read_only}
     assert mutating == {"aws_write"}
+
+
+# ------------------------------------------------------------ the CLI door
+
+
+def cli_tool() -> Any:
+    from wai.tools.cli import AwsCliTool
+
+    return AwsCliTool()
+
+
+@pytest.mark.parametrize(
+    ("argv", "service", "operation"),
+    [
+        (["s3", "ls"], "s3", "ListBuckets"),
+        (["s3", "rb", "--force"], "s3", "DeleteBucket"),
+        (["ec2", "describe-instances"], "ec2", "DescribeInstances"),
+        (["ec2", "terminate-instances"], "ec2", "TerminateInstances"),
+        (["iam", "list-roles"], "iam", "ListRoles"),
+        (["iam", "attach-role-policy"], "iam", "AttachRolePolicy"),
+        (["rds", "delete-db-instance"], "rds", "DeleteDBInstance"),
+    ],
+)
+def test_the_cli_and_the_sdk_agree(argv: list[str], service: str, operation: str) -> None:
+    """Two answers for terminate-instances depending on which door it came
+    through is exactly the gap a gate is supposed not to have. The CLI asks the
+    same classifier rather than keeping a second table to drift from."""
+    from wai.cloud.aws import classify
+
+    assert cli_tool().classify(argv) is classify(service, operation)
+
+
+def test_a_bare_aws_invocation_is_treated_as_a_change() -> None:
+    assert cli_tool().classify(["s3"]) is Sensitivity.MUTATE
+
+
+def test_the_model_cannot_retarget_the_aws_cli() -> None:
+    """--profile and --region would send the command at another account, and
+    the approval prompt would then name the wrong blast radius."""
+    from wai.tools.cli import RESERVED_FLAGS
+
+    for flag in ("--profile", "--region", "--endpoint-url"):
+        assert flag in RESERVED_FLAGS
+
+
+# ------------------------------------------------------------- the dashboard
+
+
+def test_every_aws_dashboard_panel_is_a_read() -> None:
+    """The dashboard runs these on open without asking, which is only
+    acceptable because none of them can change anything."""
+    from wai.tui.screens.dashboard import AWS_PANELS
+
+    by_name = {t.name: t for t in aws_tools()}
+    for _title, name, _args in AWS_PANELS:
+        assert by_name[name].read_only, f"{name} is not a read"
+
+
+def test_cost_explorer_is_not_on_a_refreshing_screen() -> None:
+    """It bills per request, and `r` is one keypress."""
+    from wai.tui.screens.dashboard import AWS_PANELS
+
+    assert "aws_cost" not in {name for _t, name, _a in AWS_PANELS}

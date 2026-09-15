@@ -27,14 +27,26 @@ from textual.widgets import Input, Label, Static
 
 from wai.core.visuals import Visual
 
-#: Which tools fill the dashboard, and what to call each panel. Every one is a
-#: read: the dashboard can never prompt for approval.
-PANELS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+#: Which tools fill each dashboard, and what to call the panels. Every one is a
+#: read: the dashboard can never prompt for approval, which is what makes it
+#: safe to populate itself on open.
+K8S_PANELS: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("topology", "k8s_topology", {}),
     ("requests vs limits", "k8s_usage", {}),
     ("live usage", "k8s_top", {}),
     ("storage", "k8s_storage", {}),
 )
+
+AWS_PANELS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    ("network", "aws_topology", {}),
+    ("inventory", "aws_inventory", {}),
+    ("identity", "aws_whoami", {}),
+    # Cost Explorer bills per request, so it is not on a screen that refreshes.
+    ("regions", "aws_regions", {}),
+)
+
+#: Kept for callers that predate the AWS panels.
+PANELS = K8S_PANELS
 
 
 class Panel(Vertical):
@@ -90,27 +102,38 @@ class DashboardScreen(Screen[None]):
     }
     """
 
-    def __init__(self, namespace: str = "default", *, setting: str = "auto") -> None:
+    def __init__(
+        self, namespace: str = "default", *, setting: str = "auto", cloud: str = "k8s"
+    ) -> None:
         super().__init__()
         self.namespace = namespace
         self.setting = setting
+        self.cloud = cloud
+        self.panels = AWS_PANELS if cloud == "aws" else K8S_PANELS
 
     def compose(self) -> ComposeResult:
         with Vertical():
             with Vertical(classes="head"):
                 yield Label(self._heading(), classes="title", id="heading", markup=False)
-                yield Input(value=self.namespace, placeholder="namespace", id="namespace")
+                yield Input(
+                    value=self.namespace,
+                    placeholder="namespace" if self.cloud == "k8s" else "region",
+                    id="namespace",
+                )
                 yield Label(
                     "enter to load · r refresh · click a node to open it · escape to go back",
                     classes="hint",
                     markup=False,
                 )
             with Grid():
-                for title, _tool, _args in PANELS:
+                for title, _tool, _args in self.panels:
                     yield Panel(title, setting=self.setting)
 
     def _heading(self) -> str:
         context = getattr(getattr(self.app, "config", None), "cloud", None)
+        if self.cloud == "aws":
+            where = getattr(context, "default_region", None) or "default region"
+            return f"AWS · {where}"
         where = getattr(context, "kube_context", None) or "current context"
         return f"{where} · namespace {self.namespace}"
 
@@ -143,13 +166,14 @@ class DashboardScreen(Screen[None]):
             if name not in registry:
                 return None
             # Every panel is a read, so a failure is worth showing rather than
-            # raising: one tool being denied by RBAC should not blank the rest.
-            return await registry.execute(name, {**args, "namespace": self.namespace}, context)
+            # raising: one tool being denied should not blank the rest.
+            scope = {} if self.cloud == "aws" else {"namespace": self.namespace}
+            return await registry.execute(name, {**args, **scope}, context)
 
         outcomes = await asyncio.gather(
-            *(run(tool, args) for _title, tool, args in PANELS), return_exceptions=True
+            *(run(tool, args) for _title, tool, args in self.panels), return_exceptions=True
         )
-        for panel, (title, tool, _args), outcome in zip(panels, PANELS, outcomes, strict=True):
+        for panel, (title, tool, _args), outcome in zip(panels, self.panels, outcomes, strict=True):
             if outcome is None:
                 await panel.show(None, f"{tool} is not available in this session")
             elif isinstance(outcome, BaseException):

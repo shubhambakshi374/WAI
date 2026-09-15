@@ -1827,3 +1827,60 @@ async def test_dashboard_command_opens_the_screen(monkeypatch) -> None:  # type:
         await pilot.pause()
         assert isinstance(app.screen, DashboardScreen)
         assert app.screen.namespace == "shop"
+
+
+async def test_aws_command_reports_identity(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from wai.cloud.auth import CloudStatus
+
+    monkeypatch.setattr(
+        "wai.cloud.auth.status",
+        lambda *a, **kw: CloudStatus("aws", True, True, source="env", detail="profile dev"),
+    )
+
+    class Provider:
+        region = "eu-west-1"
+        profile = None
+
+        def default_region(self) -> str:
+            return "eu-west-1"
+
+        def reset(self) -> None: ...
+
+        async def whoami(self) -> dict[str, str]:
+            return {"account": "123456789012", "arn": "arn:aws:iam::1:user/dev", "user_id": "A"}
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.tool_ctx.cloud.aws = Provider()
+        await _send(pilot, "/aws")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = _notices(pilot)
+        assert "123456789012" in rendered and "eu-west-1" in rendered
+
+
+async def test_dashboard_refuses_aws_without_the_tools() -> None:
+    from wai.tools import ToolRegistry
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.registry = ToolRegistry([])
+        await _send(pilot, "/dashboard aws")
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "AWS tools are not available" in _notices(pilot)
+
+
+async def test_the_aws_dashboard_uses_the_aws_panels(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    pretend_terminal(monkeypatch, APPLE)
+    from wai.tui.screens.dashboard import AWS_PANELS, DashboardScreen, Panel
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        screen = DashboardScreen("", cloud="aws")
+        app.push_screen(screen)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(list(screen.query(Panel))) == len(AWS_PANELS)
+        assert "AWS" in screen._heading()
