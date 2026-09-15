@@ -772,3 +772,32 @@ def test_the_cell_map_never_needed_it_either(
     _without_textual_image(monkeypatch)
     grid = draw_graph(graph, width=100, height=24, palette=DARK)
     assert grid.hits, "the map is exactly what a terminal without images gets"
+
+
+def test_the_relation_list_never_overwrites_the_map(graph: ResourceGraph) -> None:
+    """Found by rendering an AWS topology, which is a different shape from the
+    Kubernetes ones: the list was placed below the space *reserved* for the
+    map rather than below what was actually drawn, so a map that filled its
+    allowance had its bottom border written over."""
+    from wai.render.cells import draw_graph
+
+    for height in range(14, 30):
+        grid = draw_graph(graph, width=110, height=height, palette=DARK)
+        lines = grid.to_text().splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("relationships"):
+                assert "╰" not in line and "│" not in line, (
+                    f"at height {height} the list landed on the map: {line!r}"
+                )
+                assert not lines[index - 1].strip() or "─" in lines[index - 1]
+
+
+def test_a_node_that_would_overflow_the_map_area_is_not_drawn(graph: ResourceGraph) -> None:
+    """Tested against the node's bottom, not its top. Testing the top let the
+    lower half of a node spill into the relationship list."""
+    from wai.render.cells import CELLS, draw_graph
+
+    grid = draw_graph(graph, width=110, height=16, palette=DARK)
+    for hit in grid.hits:
+        assert hit.box[3] < grid.height, "every drawn node fits"
+        assert hit.box[3] - hit.box[1] == int(CELLS.node_height) - 1

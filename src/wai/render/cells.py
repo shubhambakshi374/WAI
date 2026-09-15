@@ -53,6 +53,7 @@ class CellHit:
     box: tuple[int, int, int, int]
     node_id: str
     label: str = ""
+    reader: str = ""
 
     def contains(self, column: int, row: int) -> bool:
         left, top, right, bottom = self.box
@@ -126,26 +127,45 @@ def draw_graph(
     layout(roots, CELLS, max(0.2, width / max(1.0, map_height)))
     placed = walk(roots)
 
-    hits: list[CellHit] = []
+    # Decide visibility for everything first. Drawing as we walk meant a node
+    # could be skipped for not fitting while its parent's connector was drawn
+    # anyway --- a line to nothing, and the relationship list landed on it.
+    # Tested against the *bottom*, not the top: testing the top let a node's
+    # lower half spill past the map area.
+    floor = map_top + map_height
+    boxes: dict[str, tuple[int, int, int, int]] = {}
     for entry in placed:
         left = round(entry.x)
         top = map_top + round(entry.y)
         right = left + int(CELLS.node_width) - 1
         bottom = top + int(CELLS.node_height) - 1
-        if left >= width or top >= map_top + map_height:
-            continue  # off the visible map; scrolling is the widget's business
+        if left < width and bottom < floor:
+            boxes[entry.node.id] = (left, top, right, bottom)
+
+    hits: list[CellHit] = []
+    drawn_bottom = map_top
+    for entry in placed:
+        box = boxes.get(entry.node.id)
+        if box is None:
+            continue
+        left, top, right, bottom = box
+        drawn_bottom = max(drawn_bottom, bottom)
         _draw_node(grid, entry, left, top, right, bottom, palette, width)
         hits.append(
             CellHit(
                 box=(left, top, min(right, width - 1), bottom),
                 node_id=entry.node.id,
                 label=f"{entry.node.kind}/{entry.node.name}",
+                reader=entry.node.reader,
             )
         )
-        _draw_connectors(grid, entry, left, bottom, palette, map_top, width)
+        _draw_connectors(grid, entry, left, bottom, palette, map_top, width, boxes)
 
-    row = map_top + map_height
-    if relations:
+    # Below whatever was actually drawn, not below the space reserved for it:
+    # a map shorter than its allowance would otherwise leave a gap, and one
+    # that filled it would be overwritten.
+    row = min(max(drawn_bottom + 2, map_top + 1), height - 1)
+    if relations and row < height - 1:
         grid.write(0, row, "relationships", fg=palette.muted)
         names = {node.id: node for node in model.nodes}
         for offset, (source, relation, target) in enumerate(relations[:6]):
@@ -208,10 +228,14 @@ def _draw_connectors(
     palette: Palette,
     map_top: int,
     width: int,
+    boxes: dict[str, tuple[int, int, int, int]],
 ) -> None:
     """The ownership tree's own lines: a stem down, a bus across, a drop to
-    each child. Drawn after the boxes so a bus never cuts through one."""
-    if not entry.children:
+    each child. Only to children that were actually drawn --- a line to a node
+    that did not fit points at nothing and sits where the relationship list
+    goes."""
+    children = [child for child in entry.children if child.node.id in boxes]
+    if not children:
         return
     colour, _dashed = palette.relation("owns")
     centre = left + int(CELLS.node_width) // 2

@@ -222,6 +222,11 @@ class GraphNode(BaseModel):
     namespace: str = ""
     status: str = ""
     detail: str = ""
+    reader: str = ""
+    """The tool that opens this node, for drill-down. Empty means ``k8s_get``,
+    so every existing caller keeps working --- a graph of AWS resources sets
+    ``aws_call`` instead, and the front end does not have to guess from the
+    kind which cloud it is looking at."""
 
     @property
     def mark(self) -> str:

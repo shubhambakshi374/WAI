@@ -10,6 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from wai.tools.aws.base import AwsMutatingTool, AwsTool
+from wai.tools.aws.insight import (
+    AwsCostTool,
+    AwsInventoryTool,
+    AwsQuotasTool,
+    AwsTopologyTool,
+)
 from wai.tools.aws.reads import (
     AwsCallTool,
     AwsCanITool,
@@ -23,14 +29,22 @@ from wai.tools.base import BaseTool
 
 def aws_tools(settings: Any = None) -> list[BaseTool]:
     """The tool set, minus whatever `[cloud.aws]` switches off."""
-    return [
+    tools: list[BaseTool] = [
         AwsWhoamiTool(),
         AwsServicesTool(),
         AwsExplainTool(),
         AwsCallTool(),
         AwsCanITool(),
         AwsRegionsTool(),
+        AwsInventoryTool(),
+        AwsTopologyTool(),
+        AwsQuotasTool(),
     ]
+    if settings is None or getattr(settings, "allow_cost_explorer", True):
+        # Not registered when switched off, so the model is never told about a
+        # tool that would charge the user and then refuse.
+        tools.append(AwsCostTool())
+    return tools
 
 
 __all__ = ["AwsMutatingTool", "AwsTool", "aws_tools"]

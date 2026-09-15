@@ -1655,7 +1655,7 @@ async def test_the_detail_screen_reports_an_unparseable_identity() -> None:
         await app.workers.wait_for_complete()
         await pilot.pause()
         body = app.screen.query_one("#body", Static)
-        assert "not a Kind/namespace/name" in str(body.content)
+        assert "not a Kind/scope/name" in str(body.content)
 
 
 async def test_the_detail_screen_says_so_when_kubernetes_is_absent() -> None:

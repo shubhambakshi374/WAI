@@ -41,6 +41,7 @@ class Hit:
     box: tuple[float, float, float, float]
     node_id: str
     label: str = ""
+    reader: str = ""
 
     def contains(self, x: float, y: float) -> bool:
         left, top, right, bottom = self.box

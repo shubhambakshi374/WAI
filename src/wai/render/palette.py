@@ -44,6 +44,7 @@ RELATION_STYLES: dict[str, tuple[str, bool]] = {
     "mounts": ("#e0af68", True),
     "uses": ("#7dcfff", True),
     "scales": ("#9d7cd8", True),
+    "secures": ("#f7768e", True),
 }
 
 

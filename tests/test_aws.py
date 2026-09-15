@@ -263,3 +263,244 @@ def test_aws_tools_register_because_boto3_is_a_core_dependency() -> None:
     """Unlike k8s, AWS needs no extra --- bedrock already depends on boto3."""
     names = set(default_registry(kubernetes=False, cloud=CloudSettings()).names)
     assert {"aws_whoami", "aws_call", "aws_explain", "aws_can_i"} <= names
+
+
+# ------------------------------------------------------------ curated reads
+
+
+VPC_REGION = {
+    "ec2:DescribeVpcs": {
+        "Vpcs": [
+            {
+                "VpcId": "vpc-1",
+                "CidrBlock": "10.0.0.0/16",
+                "State": "available",
+                "Tags": [{"Key": "Name", "Value": "prod-vpc"}],
+            }
+        ]
+    },
+    "ec2:DescribeSubnets": {
+        "Subnets": [
+            {
+                "SubnetId": "subnet-a",
+                "VpcId": "vpc-1",
+                "AvailabilityZone": "eu-west-1a",
+                "State": "available",
+            },
+            {
+                "SubnetId": "subnet-b",
+                "VpcId": "vpc-1",
+                "AvailabilityZone": "eu-west-1b",
+                "State": "available",
+            },
+        ]
+    },
+    "ec2:DescribeSecurityGroups": {
+        "SecurityGroups": [
+            {"GroupId": "sg-1", "GroupName": "web", "VpcId": "vpc-1"},
+            {"GroupId": "sg-unused", "GroupName": "orphan", "VpcId": "vpc-1"},
+        ]
+    },
+    "ec2:DescribeInstances": {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": "i-1",
+                        "VpcId": "vpc-1",
+                        "SubnetId": "subnet-a",
+                        "InstanceType": "t3.small",
+                        "State": {"Name": "running"},
+                        "SecurityGroups": [{"GroupId": "sg-1"}],
+                        "Tags": [{"Key": "Name", "Value": "web-1"}],
+                    },
+                    {
+                        "InstanceId": "i-2",
+                        "VpcId": "vpc-1",
+                        "SubnetId": "subnet-b",
+                        "InstanceType": "t3.small",
+                        "State": {"Name": "stopped"},
+                        "SecurityGroups": [{"GroupId": "sg-1"}],
+                    },
+                ]
+            }
+        ]
+    },
+}
+
+
+async def test_inventory_gathers_several_services() -> None:
+    provider = FakeProvider(
+        {
+            **VPC_REGION,
+            "rds:DescribeDBInstances": {
+                "DBInstances": [
+                    {
+                        "DBInstanceIdentifier": "orders",
+                        "DBInstanceStatus": "available",
+                        "Engine": "postgres",
+                        "DBInstanceClass": "db.t3.medium",
+                    }
+                ]
+            },
+            "lambda:ListFunctions": {
+                "Functions": [{"FunctionName": "resize", "Runtime": "python3.12"}]
+            },
+        }
+    )
+    out = await tool("aws_inventory").run({}, context(provider))
+    assert not out.is_error
+    assert "web-1" in out.content and "orders" in out.content and "resize" in out.content
+    assert out.visual is not None
+
+
+async def test_one_service_failing_does_not_take_the_inventory_down() -> None:
+    """IAM routinely permits some of these and not others."""
+    provider = FakeProvider({**VPC_REGION}, fail="rds:DescribeDBInstances")
+    out = await tool("aws_inventory").run({}, context(provider))
+    assert not out.is_error
+    assert "web-1" in out.content, "EC2 still listed"
+    assert "rds" in (out.visual.caption if out.visual else ""), "and the failure is named"
+
+
+async def test_topology_builds_the_vpc_tree() -> None:
+    provider = FakeProvider(VPC_REGION)
+    out = await tool("aws_topology").run({}, context(provider))
+    assert not out.is_error
+    graph = out.visual
+    assert graph is not None
+    kinds = {node.kind for node in graph.nodes}
+    assert {"Vpc", "Subnet", "Instance", "SecurityGroup"} <= kinds
+    owns = [e for e in graph.edges if e.relation == "owns"]
+    assert len(owns) == 4, "vpc->2 subnets, subnet->instance twice"
+
+
+async def test_topology_nodes_know_which_tool_opens_them() -> None:
+    """Inferring the reader from the kind would mean the front end guessing
+    which cloud a graph came from, and guessing wrong would send an instance
+    id to a Kubernetes tool."""
+    provider = FakeProvider(VPC_REGION)
+    out = await tool("aws_topology").run({}, context(provider))
+    assert out.visual is not None
+    assert {node.reader for node in out.visual.nodes} == {"aws_call"}
+
+
+async def test_topology_identities_split_the_way_drill_down_expects() -> None:
+    from wai.cloud.k8s import split_node_id
+
+    provider = FakeProvider(VPC_REGION)
+    out = await tool("aws_topology").run({}, context(provider))
+    assert out.visual is not None
+    for node in out.visual.nodes:
+        assert split_node_id(node.id) is not None, node.id
+
+
+async def test_topology_omits_security_groups_nothing_uses() -> None:
+    """An unattached group is noise on a map of what talks to what."""
+    provider = FakeProvider(VPC_REGION)
+    out = await tool("aws_topology").run({}, context(provider))
+    assert out.visual is not None
+    names = {node.name for node in out.visual.nodes}
+    assert "web" in names and "orphan" not in names
+
+
+async def test_topology_security_groups_cut_across_the_tree() -> None:
+    """They are what make this a graph rather than a tree: membership ignores
+    the VPC hierarchy entirely."""
+    provider = FakeProvider(VPC_REGION)
+    out = await tool("aws_topology").run({}, context(provider))
+    assert out.visual is not None
+    secures = [e for e in out.visual.edges if e.relation == "secures"]
+    assert len(secures) == 2
+
+
+async def test_topology_draws_what_it_can_when_a_read_is_denied() -> None:
+    provider = FakeProvider(VPC_REGION, fail="ec2:DescribeSecurityGroups")
+    out = await tool("aws_topology").run({}, context(provider))
+    assert not out.is_error
+    assert out.visual is not None
+    assert not [e for e in out.visual.edges if e.relation == "secures"]
+
+
+async def test_topology_on_an_empty_region_says_so() -> None:
+    out = await tool("aws_topology").run({}, context(FakeProvider()))
+    assert not out.is_error
+    assert "no VPC resources" in out.content
+
+
+# ----------------------------------------------------------------- aws_cost
+
+
+COST = {
+    "ce:GetCostAndUsage": {
+        "ResultsByTime": [
+            {
+                "TimePeriod": {"Start": "2026-09-01"},
+                "Groups": [
+                    {"Keys": ["Amazon EC2"], "Metrics": {"UnblendedCost": {"Amount": "12.50"}}},
+                    {"Keys": ["Amazon S3"], "Metrics": {"UnblendedCost": {"Amount": "1.20"}}},
+                ],
+            },
+            {
+                "TimePeriod": {"Start": "2026-09-02"},
+                "Groups": [
+                    {"Keys": ["Amazon EC2"], "Metrics": {"UnblendedCost": {"Amount": "13.10"}}},
+                    {"Keys": ["Amazon S3"], "Metrics": {"UnblendedCost": {"Amount": "1.30"}}},
+                ],
+            },
+        ]
+    }
+}
+
+
+async def test_cost_returns_a_chart_with_a_real_time_axis() -> None:
+    provider = FakeProvider(COST)
+    out = await tool("aws_cost").run({"days": 2}, context(provider))
+    assert not out.is_error
+    chart = out.visual
+    assert chart is not None
+    assert {line.label for line in chart.series} == {"Amazon EC2", "Amazon S3"}
+    assert all(line.timed for line in chart.series), "timestamps, not just a shape"
+    assert "28.10" in out.summary
+
+
+async def test_cost_says_in_its_description_that_it_charges() -> None:
+    """It bills per request. The model has to be able to warn the user before
+    spending their money."""
+    assert "COSTS MONEY" in tool("aws_cost").description
+
+
+async def test_cost_can_be_switched_off_entirely() -> None:
+    """Not registered when off --- a tool that would charge and then refuse is
+    worse than one that is simply absent."""
+    off = AwsSettings(allow_cost_explorer=False)
+    assert not any(t.name == "aws_cost" for t in aws_tools(off))
+    assert any(t.name == "aws_cost" for t in aws_tools(AwsSettings()))
+
+
+async def test_cost_with_no_data_says_so() -> None:
+    out = await tool("aws_cost").run({}, context(FakeProvider()))
+    assert not out.is_error and "no cost data" in out.content
+
+
+# --------------------------------------------------------------- aws_quotas
+
+
+async def test_quotas_come_back_as_bars() -> None:
+    provider = FakeProvider(
+        {
+            "service-quotas:ListServiceQuotas": {
+                "Quotas": [
+                    {
+                        "QuotaName": "Running On-Demand Standard instances",
+                        "Value": 640,
+                        "Unit": "None",
+                    },
+                    {"QuotaName": "VPCs per Region", "Value": 5, "Unit": "None"},
+                ]
+            }
+        }
+    )
+    out = await tool("aws_quotas").run({"service": "ec2"}, context(provider))
+    assert not out.is_error
+    assert out.visual is not None and len(out.visual.bars) == 2
