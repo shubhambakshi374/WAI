@@ -60,7 +60,20 @@ PRIVILEGED_SUBCOMMANDS: dict[str, frozenset[str]] = {
 #: Flags we set ourselves from session state. A model supplying its own is
 #: either confused or retargeting the command at a cluster the user did not
 #: approve, and the prompt would then name the wrong blast radius.
-RESERVED_FLAGS = ("--kubeconfig", "--context", "--kube-context", "--as", "--as-group", "--token")
+RESERVED_FLAGS = (
+    "--kubeconfig",
+    "--context",
+    "--kube-context",
+    "--as",
+    "--as-group",
+    "--token",
+    # AWS: these retarget the command at another account or identity, which
+    # would make the approval prompt name the wrong blast radius.
+    "--profile",
+    "--region",
+    "--endpoint-url",
+    "--ca-bundle",
+)
 
 
 class CliTool(BaseTool):
@@ -85,9 +98,16 @@ class CliTool(BaseTool):
     }
 
     def classify(self, args: list[str]) -> Sensitivity:
-        subcommand = next((a for a in args if not a.startswith("-")), "")
+        positional = [a for a in args if not a.startswith("-")]
+        subcommand = positional[0] if positional else ""
         if subcommand in PRIVILEGED_SUBCOMMANDS.get(self.binary, frozenset()):
             return Sensitivity.PRIVILEGED
+        if self.binary == "aws":
+            # Ask the same classifier the SDK path uses, rather than keeping a
+            # second table that would drift from it. Two answers for
+            # `terminate-instances` depending on which door it came through is
+            # exactly the kind of gap a gate is supposed not to have.
+            return _classify_aws(positional)
         if any(a == "--raw" for a in args):
             # kubectl --raw reaches any API path with any verb, unclassified.
             return Sensitivity.PRIVILEGED
@@ -129,6 +149,10 @@ class CliTool(BaseTool):
         full = [*argv]
         if context_name and self.binary in {"kubectl", "helm"}:
             full = [*argv, "--context", context_name]
+        elif self.binary == "aws":
+            region = getattr(ctx.cloud, "aws_region", "") or ""
+            if region:
+                full = [*argv, "--region", region]
 
         sensitivity = self.classify(argv)
         if sensitivity.needs_approval:
@@ -173,6 +197,36 @@ class CliTool(BaseTool):
             is_error=code != 0,
             summary=f"{self.binary} exit {code}",
         )
+
+
+#: `aws s3 ls` and friends, whose verbs are not the API operation name.
+AWS_SHORTHAND: dict[tuple[str, str], str] = {
+    ("s3", "ls"): "ListBuckets",
+    ("s3", "cp"): "PutObject",
+    ("s3", "mv"): "PutObject",
+    ("s3", "rm"): "DeleteObject",
+    ("s3", "rb"): "DeleteBucket",
+    ("s3", "mb"): "CreateBucket",
+    ("s3", "sync"): "PutObject",
+}
+
+
+def _classify_aws(positional: list[str]) -> Sensitivity:
+    """`aws <service> <verb>` through the SDK's own classifier.
+
+    The CLI's kebab-case verb is the API operation name with hyphens, so the
+    two can share one table --- which is the point. An unrecognised shape falls
+    through to the classifier's own fail-closed answer.
+    """
+    from wai.cloud.aws import classify
+
+    if len(positional) < 2:
+        return Sensitivity.MUTATE
+    service, verb = positional[0], positional[1]
+    operation = AWS_SHORTHAND.get((service, verb)) or "".join(
+        part.capitalize() for part in verb.split("-")
+    )
+    return classify(service, operation)
 
 
 async def _execute(path: str, argv: list[str], *, timeout_seconds: float) -> tuple[int, str, str]:
@@ -223,6 +277,19 @@ class HelmTool(CliTool):
     )
 
 
+class AwsCliTool(CliTool):
+    name: ClassVar[str] = "aws_cli"
+    binary: ClassVar[str] = "aws"
+    description: ClassVar[str] = (
+        "Run the AWS CLI when — and only when — aws_call cannot express what "
+        "you need. It almost always can: aws_explain gives you the exact "
+        "parameter names, the response comes back structured and redacted, and "
+        "the approval prompt says what was checked. The CLI gives up all four. "
+        "Say in `reason` why it is necessary; the user sees it. --profile and "
+        "--region are supplied by WAI."
+    )
+
+
 class KustomizeTool(CliTool):
     name: ClassVar[str] = "kustomize"
     binary: ClassVar[str] = "kustomize"
@@ -233,4 +300,4 @@ class KustomizeTool(CliTool):
 
 
 def cli_tools() -> list[CliTool]:
-    return [KubectlTool(), HelmTool(), KustomizeTool()]
+    return [KubectlTool(), HelmTool(), KustomizeTool(), AwsCliTool()]

@@ -318,6 +318,10 @@ def build_cloud_context(config: Config) -> CloudContext:
 
         provider = K8sProvider(context=settings.kube_context, kubeconfigs=kubeconfigs)
 
+    from wai.cloud.aws import AwsProvider
+
+    aws_provider = AwsProvider(region=settings.default_region)
+
     forwards = None
     if provider is not None and settings.k8s.allow_port_forward:
         from wai.tools.k8s.streams import PortForwards
@@ -343,6 +347,9 @@ def build_cloud_context(config: Config) -> CloudContext:
             settings.protected.patterns, settings.protected.accounts, settings.protected.mode
         ),
         on_context_change=remember,
+        aws=aws_provider,
+        aws_region=settings.default_region or "",
+        aws_settings=settings.aws,
         exec_timeout=settings.k8s.exec_timeout,
         allow_rbac_writes=settings.k8s.allow_rbac_writes,
         cli_allowlist=tuple(settings.cli_allowlist),

@@ -38,6 +38,13 @@ class CloudContext:
     on_context_change: Callable[[str, str], None] | None = None
     """Called after a switch, to persist it. Optional: a headless run that
     should not write config simply leaves it unset."""
+    aws: Any = None
+    """A ``wai.cloud.aws.AwsProvider``; typed loosely so ``tools.base`` does not
+    import an SDK path at module scope."""
+    aws_region: str = ""
+    aws_settings: Any = None
+    """A ``wai.config.models.AwsSettings``. Checked at the gate for the classes
+    that cannot be enforced by withholding a tool."""
     exec_timeout: int = 60
     cli_allowlist: tuple[str, ...] = ()
     """Binaries the CLI fallback may run. Registration already filters on this,

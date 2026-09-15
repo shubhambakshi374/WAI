@@ -157,7 +157,14 @@ def draw_graph(
                 size=status_size,
                 anchor="rs",
             )
-        hits.append(Hit(box=box, node_id=node.id, label=f"{node.kind}/{node.name}"))
+        hits.append(
+            Hit(
+                box=box,
+                node_id=node.id,
+                label=f"{node.kind}/{node.name}",
+                reader=node.reader,
+            )
+        )
 
     if model.caption:
         canvas.text((PAD, canvas.height - PAD - 10), model.caption, fill=palette.muted, size=9)

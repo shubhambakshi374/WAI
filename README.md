@@ -179,10 +179,56 @@ for the command you are writing.
 | `/model <id>` | Set one directly |
 | `/login` · `/login <cloud>` | Cloud auth status, or sign in |
 | `/kube` · `/kube use <ctx>` · `/kube add <path>` | Kubernetes contexts |
+| `/aws` · `/aws region <name>` · `/aws profile <name>` | AWS identity, account and region |
+| `/dashboard [aws \| k8s] [<scope>]` | Several read-only views on one screen |
+| `/graphics [auto \| image \| cells \| off]` | How visuals are drawn, and why |
 | `/tools` | Tools, installed integrations, standing approvals |
 | `/new` | Start a fresh session |
 
 `wai login` and `wai kube list|use|add` do the same from the shell.
+
+## AWS
+
+431 services and 19,189 operations, so there is no tool per operation. There is
+one generic call, and the SDK's own service models are what make it usable:
+
+```
+> what's running in eu-west-1, and what is it costing us
+```
+
+`aws_inventory` for EC2, RDS and Lambda in one table; `aws_topology` for the
+VPC tree with security groups drawn across it; `aws_cost` for spend by service
+over time. `aws_explain` hands the model an operation's exact parameter
+contract, which is why it reaches for the SDK rather than guessing CLI flags.
+
+**Reads run freely. Everything else asks.** And the prompt is honest about what
+it was able to check, which is where AWS differs from Kubernetes:
+
+| | |
+|---|---|
+| EC2 | Dry-run against AWS — 819 operations support it |
+| Everything else | An IAM permission check, plus the resource's current state |
+
+AWS offers no preview for 95.7% of its operations, so the prompt says *"not
+dry-run: AWS cannot preview this operation"* rather than implying a check that
+never happened.
+
+Operations are classified on four levels, and 6.2% are **privileged** —
+rewriting IAM, destroying something that holds data, opening a resource to the
+network. Those demand the target typed out and can never be granted standing
+approval. Ordinary changes take a keypress; a challenge that fires on
+everything just trains you to type through it.
+
+```toml
+[cloud.aws]
+allow_writes        = true
+allow_iam_writes    = true   # checked at the gate, not by withholding a tool
+allow_delete        = true
+allow_cost_explorer = true   # Cost Explorer bills per request
+```
+
+`aws_cost` costs money — roughly $0.01 a call — so it says so in its own
+description, and it is left off the dashboard, which refreshes on a keypress.
 
 ## Kubernetes
 
@@ -552,7 +598,8 @@ tests/         mirrors it; tests/__snapshots__ holds the TUI SVGs
 - **Phase 2a — DevOps foundations.** ✅ Cloud auth, contexts, redaction, protected environments, slash commands.
 - **Phase 2b — Kubernetes.** ✅ Topology, usage, storage, metrics, schema lookup, and changes behind a dry-run gate.
 - **Local models.** ✅ Ollama, LM Studio, vLLM, llama.cpp — discovered, capability-checked, no key.
-- **Phase 2c–2e —** AWS, Azure/GCP, and the justified CLI fallback.
+- **Phase 2c — AWS.** ✅ Inventory, VPC topology, cost, quotas, and any operation behind a gate that says what it could check.
+- **Phase 2d–2e —** Azure/GCP, and further CLI fallback.
 - **Phase 3 — the workflow designer.** Compose and run multi-step workflows over a shared workspace; the reason the layering above is enforced.
 - **Phase 3+ —** shell execution, then the software factory built on the workflow engine.
 

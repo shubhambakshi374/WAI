@@ -40,10 +40,11 @@ CELL_ASPECT = 2.1
 class NodeSelected(Message):
     """A node was clicked. Carries what drill-down needs and nothing else."""
 
-    def __init__(self, node_id: str, label: str) -> None:
+    def __init__(self, node_id: str, label: str, reader: str = "") -> None:
         super().__init__()
         self.node_id = node_id
         self.label = label
+        self.reader = reader
 
 
 class CellMap(Static):
@@ -93,7 +94,7 @@ class CellMap(Static):
             return
         hit = self._grid.hit(event.x, event.y)
         if hit is not None:
-            self.post_message(NodeSelected(hit.node_id, hit.label))
+            self.post_message(NodeSelected(hit.node_id, hit.label, hit.reader))
 
 
 class ImageMap(Widget):
@@ -150,7 +151,7 @@ class ImageMap(Widget):
         scale_y = self._rendered.size[1] / max(1, self.size.height)
         hit = self._rendered.hit(event.x * scale_x, event.y * scale_y)
         if hit is not None:
-            self.post_message(NodeSelected(hit.node_id, hit.label))
+            self.post_message(NodeSelected(hit.node_id, hit.label, hit.reader))
 
     def _redraw(self, view: View) -> None:
         """Re-render at the new view rather than scaling the bitmap, so text
@@ -229,4 +230,4 @@ class GraphicsPanel(Vertical):
         from wai.tui.screens.detail import NodeDetail
 
         message.stop()
-        self.app.push_screen(NodeDetail(message.node_id, message.label))
+        self.app.push_screen(NodeDetail(message.node_id, message.label, message.reader))

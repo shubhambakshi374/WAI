@@ -284,16 +284,88 @@ async def cmd_tools(app: WaiApp, args: list[str]) -> CommandResult:
     return CommandResult("\n".join(rows), title="Tools")
 
 
+async def cmd_aws(app: WaiApp, args: list[str]) -> CommandResult:
+    """Identity, account and region --- and switching either.
+
+    Switching asks nothing here because it changes no cloud state, but it does
+    change the blast radius of every later call, so it reports what it moved to
+    and whether that account is protected.
+    """
+    from wai.cloud.auth import status
+    from wai.cloud.base import ProtectionRules
+    from wai.config import save_config
+
+    settings = app.config.cloud
+    rules = ProtectionRules.build(
+        settings.protected.patterns, settings.protected.accounts, settings.protected.mode
+    )
+
+    if args and args[0] == "region":
+        if len(args) < 2:
+            return CommandResult.error("usage: /aws region <name>")
+        settings.default_region = args[1]
+        save_config(app.config)
+        provider = getattr(app.tool_ctx.cloud, "aws", None)
+        if provider is not None:
+            provider.region = args[1]
+            provider.reset()
+        app.tool_ctx.cloud.aws_region = args[1]
+        return CommandResult(f"AWS region set to {args[1]}.")
+
+    if args and args[0] == "profile":
+        if len(args) < 2:
+            return CommandResult.error("usage: /aws profile <name>")
+        provider = getattr(app.tool_ctx.cloud, "aws", None)
+        if provider is None:
+            return CommandResult.error("no AWS session in this context")
+        provider.profile = args[1]
+        provider.reset()
+        return CommandResult(
+            f"Using AWS profile {args[1]} for this session. Set AWS_PROFILE to make it the default."
+        )
+
+    current = await asyncio.to_thread(status, "aws")
+    if not current.authenticated:
+        return CommandResult.warn(f"Not signed in to AWS: {current.detail or current.hint}")
+
+    rows = ["AWS:", f"  {current.source or 'credentials'}  {current.detail}"]
+    provider = getattr(app.tool_ctx.cloud, "aws", None)
+    if provider is not None:
+        try:
+            identity = await provider.whoami()
+        except Exception as exc:
+            rows.append(f"  could not read identity: {exc}")
+        else:
+            from wai.cloud.aws import target_for
+
+            region = settings.default_region or provider.default_region()
+            protected = rules.matches(target_for(identity["account"], region))
+            rows.append(f"  account  {identity['account']}")
+            rows.append(f"  arn      {identity['arn']}")
+            rows.append(f"  region   {region}{'  ⚠ protected' if protected else ''}")
+    rows.append("\n  /aws region <name> · /aws profile <name>")
+    return CommandResult("\n".join(rows), title="AWS")
+
+
 async def cmd_dashboard(app: WaiApp, args: list[str]) -> CommandResult:
     """Four read-only views of one namespace, on one screen."""
     from wai.tui.screens.dashboard import DashboardScreen
 
-    if "k8s_topology" not in app.registry:
-        return CommandResult.error(
-            "Kubernetes tools are not available. Install the extra with: uv sync --extra k8s"
+    wanted = (args[0] if args else "").casefold()
+    cloud = "aws" if wanted == "aws" else "k8s"
+    rest = args[1:] if wanted in {"aws", "k8s"} else args
+
+    probe = "aws_topology" if cloud == "aws" else "k8s_topology"
+    if probe not in app.registry:
+        hint = (
+            "AWS tools are not available in this session."
+            if cloud == "aws"
+            else "Kubernetes tools are not available. Install with: uv sync --extra k8s"
         )
-    namespace = args[0] if args else "default"
-    app.push_screen(DashboardScreen(namespace, setting=app.config.ui.graphics))
+        return CommandResult.error(hint)
+
+    scope = rest[0] if rest else ("" if cloud == "aws" else "default")
+    app.push_screen(DashboardScreen(scope, setting=app.config.ui.graphics, cloud=cloud))
     return CommandResult.silent()
 
 
@@ -367,11 +439,17 @@ def build_registry() -> CommandRegistry:
         ),
         Command("login", "Cloud auth status, or sign in", "login [<cloud>]", cmd_login),
         Command("kube", "Kubernetes contexts", "kube [use <ctx> | add <path>]", cmd_kube),
+        Command(
+            "aws",
+            "AWS identity, account and region",
+            "aws [region <name> | profile <name>]",
+            cmd_aws,
+        ),
         Command("tools", "Tools and installed integrations", "tools", cmd_tools),
         Command(
             "dashboard",
-            "Topology, usage and storage on one screen",
-            "dashboard [<namespace>]",
+            "Several read-only views on one screen",
+            "dashboard [aws | k8s] [<scope>]",
             cmd_dashboard,
         ),
         Command(

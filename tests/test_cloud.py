@@ -33,18 +33,40 @@ from wai.cloud.redact import MARKER, redact, redact_text
         ("s3", "ListBuckets", Sensitivity.READ),
         ("s3", "GetObject", Sensitivity.READ),
         ("cloudwatch", "GetMetricData", Sensitivity.READ),
-        ("ec2", "TerminateInstances", Sensitivity.MUTATE),
-        ("rds", "DeleteDBInstance", Sensitivity.MUTATE),
         ("lambda", "Invoke", Sensitivity.MUTATE),
         ("s3", "PutObject", Sensitivity.MUTATE),
         ("sts", "GetSessionToken", Sensitivity.SENSITIVE_READ),
-        ("sts", "AssumeRole", Sensitivity.SENSITIVE_READ),
+        ("sts", "AssumeRole", Sensitivity.PRIVILEGED),
         ("secretsmanager", "GetSecretValue", Sensitivity.SENSITIVE_READ),
         ("ecr", "GetAuthorizationToken", Sensitivity.SENSITIVE_READ),
         ("ssm", "GetParameter", Sensitivity.SENSITIVE_READ),
         ("ec2", "GetPasswordData", Sensitivity.SENSITIVE_READ),
-        ("iam", "CreateAccessKey", Sensitivity.SENSITIVE_READ),
+        ("iam", "CreateAccessKey", Sensitivity.PRIVILEGED),
         ("eks", "DescribeCluster", Sensitivity.SENSITIVE_READ),
+        # Reading the authorization graph is how you understand an account.
+        ("iam", "ListRoles", Sensitivity.READ),
+        ("iam", "GetRole", Sensitivity.READ),
+        ("organizations", "ListAccounts", Sensitivity.READ),
+        # Writing it is not.
+        ("iam", "AttachRolePolicy", Sensitivity.PRIVILEGED),
+        ("iam", "DeleteRole", Sensitivity.PRIVILEGED),
+        ("organizations", "LeaveOrganization", Sensitivity.PRIVILEGED),
+        ("kms", "ScheduleKeyDeletion", Sensitivity.PRIVILEGED),
+        ("sts", "AssumeRoleWithWebIdentity", Sensitivity.PRIVILEGED),
+        # Destroying something that holds data.
+        ("ec2", "TerminateInstances", Sensitivity.PRIVILEGED),
+        ("rds", "DeleteDBInstance", Sensitivity.PRIVILEGED),
+        ("s3", "DeleteBucket", Sensitivity.PRIVILEGED),
+        ("logs", "DeleteLogGroup", Sensitivity.PRIVILEGED),
+        # Opening something to the network.
+        ("ec2", "AuthorizeSecurityGroupIngress", Sensitivity.PRIVILEGED),
+        ("s3", "PutBucketPolicy", Sensitivity.PRIVILEGED),
+        ("lambda", "AddPermission", Sensitivity.PRIVILEGED),
+        # Ordinary changes stay ordinary.
+        ("ec2", "CreateTags", Sensitivity.MUTATE),
+        ("ec2", "DeleteTags", Sensitivity.MUTATE),
+        ("cloudwatch", "DeleteAlarms", Sensitivity.MUTATE),
+        ("s3", "PutObject", Sensitivity.MUTATE),
     ],
 )
 def test_aws_classification(service: str, operation: str, expected: Sensitivity) -> None:
@@ -52,8 +74,67 @@ def test_aws_classification(service: str, operation: str, expected: Sensitivity)
 
 
 def test_unknown_verbs_fail_closed() -> None:
+    """To PRIVILEGED, not MUTATE. AWS ships new operations constantly, and a
+    verb nobody anticipated is where guessing low is unrecoverable."""
     for operation in ("FrobnicateWidget", "YeetInstance", "Whatever"):
-        assert aws_cloud.classify("madeup", operation) is Sensitivity.MUTATE
+        assert aws_cloud.classify("madeup", operation) is Sensitivity.PRIVILEGED
+
+
+def test_no_identity_write_is_merely_a_mutation() -> None:
+    """The whole corpus. A write to IAM, STS, Organizations or KMS decides who
+    may do what --- none of them may sit at the same level as tagging a
+    volume, where a single keypress is enough."""
+    leaked: list[str] = []
+    for service in sorted(aws_cloud.PRIVILEGED_SERVICES):
+        try:
+            candidates = aws_cloud.operations(service)
+        except Exception:
+            continue  # not every name in the set is a botocore service
+        for operation in candidates:
+            if operation.startswith(aws_cloud.READ_PREFIXES):
+                continue
+            if aws_cloud.classify(service, operation) is not Sensitivity.PRIVILEGED:
+                leaked.append(f"{service}:{operation}")
+    assert leaked == [], f"identity writes below PRIVILEGED: {leaked[:10]}"
+
+
+def test_the_privileged_tier_stays_rare_enough_to_mean_something() -> None:
+    """A challenge that fires on everything trains people to type through it.
+
+    Measured across all 19,189 operations. The number is asserted loosely ---
+    the point is to notice if a future rule makes half of AWS privileged, not
+    to pin an exact count.
+    """
+    import botocore.session
+
+    session = botocore.session.get_session()
+    counts = {level: 0 for level in Sensitivity}
+    for service in session.get_available_services():
+        try:
+            model = session.get_service_model(service)
+        except Exception:
+            continue
+        for operation in model.operation_names:
+            counts[aws_cloud.classify(service, operation)] += 1
+
+    total = sum(counts.values())
+    assert total > 15_000, "the corpus should be most of AWS"
+    share = counts[Sensitivity.PRIVILEGED] / total
+    assert 0.01 < share < 0.15, f"privileged is {share:.1%} of operations"
+
+
+def test_destruction_is_judged_by_what_is_destroyed() -> None:
+    """Losing a CloudWatch alarm is an inconvenience; losing a database is
+    not. Before this distinction existed every Delete* came out privileged,
+    which made the distinction decide nothing."""
+    ordinary = ("cloudwatch:DeleteAlarms", "ec2:DeleteTags", "ec2:DeleteSecurityGroup")
+    grave = ("rds:DeleteDBInstance", "s3:DeleteBucket", "efs:DeleteFileSystem")
+    for qualified in ordinary:
+        service, operation = qualified.split(":")
+        assert aws_cloud.classify(service, operation) is Sensitivity.MUTATE, qualified
+    for qualified in grave:
+        service, operation = qualified.split(":")
+        assert aws_cloud.classify(service, operation) is Sensitivity.PRIVILEGED, qualified
 
 
 def test_no_credential_shaped_operation_is_classified_read() -> None:
@@ -83,7 +164,7 @@ def test_only_approval_free_level_is_read() -> None:
 
 def test_describe_operation_reports_required_params_and_docs() -> None:
     described = aws_cloud.describe_operation("ec2", "TerminateInstances")
-    assert described["sensitivity"] == "mutate"
+    assert described["sensitivity"] == "privileged"
     assert [k for k, v in described["parameters"].items() if v["required"]] == ["InstanceIds"]
     assert described["documentation"]
     assert "<" not in described["documentation"], "HTML must be stripped"
@@ -501,3 +582,100 @@ def test_env_style_output_is_scrubbed_without_eating_ordinary_variables(
     else:
         assert value not in out, f"{line} leaked"
         assert MARKER in out
+
+
+# ------------------------------------------------------------- aws sessions
+
+
+class FakeAwsClient:
+    """A botocore client's shape, without a network or an account."""
+
+    def __init__(self, pages: dict[str, list[dict[str, object]]] | None = None) -> None:
+        self.pages = pages or {}
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def can_paginate(self, method: str) -> bool:
+        return method in self.pages
+
+    def get_paginator(self, method: str) -> FakeAwsClient:
+        self._method = method
+        return self
+
+    def paginate(self, **kwargs: object) -> list[dict[str, object]]:
+        self.calls.append((self._method, kwargs))
+        return list(self.pages[self._method])
+
+    def get_caller_identity(self) -> dict[str, str]:
+        self.calls.append(("get_caller_identity", {}))
+        return {
+            "Account": "123456789012",
+            "Arn": "arn:aws:iam::123456789012:user/dev",
+            "UserId": "A",
+        }
+
+    def describe_regions(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("describe_regions", kwargs))
+        return {"Regions": [{"RegionName": "eu-west-1"}]}
+
+
+def provider_with(client: FakeAwsClient) -> aws_cloud.AwsProvider:
+    provider = aws_cloud.AwsProvider(region="eu-west-1")
+    provider._clients[("sts", "eu-west-1")] = client
+    provider._clients[("ec2", "eu-west-1")] = client
+    provider._session = type("S", (), {"region_name": "eu-west-1"})()
+    return provider
+
+
+async def test_whoami_is_cached_because_every_preflight_needs_it() -> None:
+    """The ARN is what SimulatePrincipalPolicy uses as PolicySourceArn, so it
+    is asked for constantly and must not be a call each time."""
+    client = FakeAwsClient()
+    provider = provider_with(client)
+    first = await provider.whoami()
+    await provider.whoami()
+    assert first["account"] == "123456789012"
+    assert [name for name, _ in client.calls].count("get_caller_identity") == 1
+
+
+async def test_reset_drops_the_cached_client() -> None:
+    """A cached client is bound to the credentials it was built with; reusing
+    one after a profile change would call the account you just left."""
+    provider = provider_with(FakeAwsClient())
+    await provider.whoami()
+    provider.reset()
+    assert provider._clients == {}
+    assert provider._identity is None
+
+
+async def test_results_are_capped_and_the_cap_is_declared() -> None:
+    """Returning the first page silently would have the model reason about a
+    partial answer as though it were the whole one."""
+    pages = {"describe_instances": [{"Reservations": [{"n": i}]} for i in range(20)]}
+    provider = provider_with(FakeAwsClient(pages))
+    out = await provider.call("ec2", "DescribeInstances", limit=5)
+    assert len(out["Reservations"]) == 5
+    assert "_truncated" in out
+
+
+async def test_pagination_bookkeeping_never_reaches_the_model() -> None:
+    pages = {
+        "describe_instances": [
+            {"Reservations": [{"n": 1}], "NextToken": "abc", "ResponseMetadata": {"RequestId": "x"}}
+        ]
+    }
+    provider = provider_with(FakeAwsClient(pages))
+    out = await provider.call("ec2", "DescribeInstances")
+    assert out["Reservations"] == [{"n": 1}]
+    assert "NextToken" not in out and "ResponseMetadata" not in out
+
+
+async def test_an_unpaginated_operation_still_works() -> None:
+    client = FakeAwsClient()
+    provider = provider_with(client)
+    out = await provider.call("ec2", "DescribeRegions")
+    assert out["Regions"] == [{"RegionName": "eu-west-1"}]
+
+
+def test_the_operation_name_becomes_botocore_s_method_name() -> None:
+    assert aws_cloud.python_method("DescribeInstances") == "describe_instances"
+    assert aws_cloud.python_method("GetCallerIdentity") == "get_caller_identity"

@@ -77,6 +77,7 @@ def default_registry(
     *,
     writes: bool = True,
     kubernetes: bool | None = None,
+    aws: bool | None = None,
     cloud: Any = None,
 ) -> ToolRegistry:
     """The tool set for a session.
@@ -88,10 +89,16 @@ def default_registry(
     model is not told it exists.
 
     ``cloud`` is a ``CloudSettings``; None means every class is on.
+
+    ``kubernetes`` and ``aws`` default to autodetection from what is installed.
+    Pass False for either to build a registry without it --- which is what a
+    test wanting only the filesystem tools should do.
     """
     tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
     if writes:
         tools += [WriteFileTool(), EditFileTool(), DeletePathTool()]
+    # Cloud tools are assembled below and filtered at the end, because their
+    # own switches decide registration first and `writes` is the floor.
 
     if kubernetes is None:
         from wai.cloud.base import integration
@@ -103,11 +110,28 @@ def default_registry(
 
         tools += list(k8s_tools(getattr(cloud, "k8s", None)))
 
+    if aws is None:
+        from wai.cloud.base import integration
+
+        aws_entry = integration("aws")
+        aws = bool(aws_entry and aws_entry.available)
+    if aws:
+        from wai.tools.aws import aws_tools
+
+        tools += list(aws_tools(getattr(cloud, "aws", None)))
+
     if _cli_enabled(cloud):
         from wai.tools.cli import cli_tools
 
         allowed = set(getattr(cloud, "cli_allowlist", ()) or ())
         tools += [t for t in cli_tools() if not allowed or t.binary in allowed]
+
+    if not writes:
+        # `writes=False` has to mean *no writes*, not "no file writes". It
+        # filtered only the filesystem tools, so a read-only registry still
+        # carried k8s_delete and aws_write --- and build_system_prompt then
+        # told the model it had read-only access while handing it a drain.
+        tools = [tool for tool in tools if tool.read_only]
     return ToolRegistry(tools)
 
 
