@@ -27,10 +27,14 @@ from wai.tools.k8s.mutations import (
 )
 from wai.tools.k8s.reads import (
     K8sApiResourcesTool,
+    K8sCanITool,
     K8sContextsTool,
     K8sEventsTool,
+    K8sGetTool,
     K8sListTool,
     K8sLogsTool,
+    K8sRawTool,
+    K8sWaitTool,
 )
 
 
@@ -39,8 +43,12 @@ def k8s_tools() -> list[BaseTool]:
         K8sContextsTool(),
         K8sApiResourcesTool(),
         K8sListTool(),
+        K8sGetTool(),
         K8sEventsTool(),
         K8sLogsTool(),
+        K8sWaitTool(),
+        K8sCanITool(),
+        K8sRawTool(),
         K8sTopTool(),
         K8sUsageTool(),
         K8sStorageTool(),

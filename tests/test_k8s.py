@@ -14,6 +14,7 @@ import pytest
 from wai.cloud import k8s as k8s_api
 from wai.cloud.base import ProtectionRules
 from wai.cloud.k8s import MetricsUnavailable, build_graph, parse_cpu, parse_memory
+from wai.cloud.redact import MARKER
 from wai.core.visuals import Bars, ResourceGraph, Table, VisualGroup
 from wai.tools.approval import Decision
 from wai.tools.base import CloudContext, ToolContext
@@ -132,6 +133,12 @@ class FakeClient:
         self.context = "AKS_QAM"
         self.calls: list[tuple[str, str]] = []
         self._groups = groups or {"v1", "apps/v1", "networking.k8s.io/v1"}
+        self.created: list[tuple[str, dict[str, Any], bool]] = []
+        self.raw_calls: list[tuple[str, str]] = []
+        self.raw_responses: dict[str, Any] = {}
+        self.reviews: dict[str, Any] = {}
+        self.watches: list[tuple[str, dict[str, Any]]] = []
+        self.watch_result: tuple[bool, list[dict[str, Any]], str] = (True, [], "met")
 
     async def api_groups(self) -> set[str]:
         return self._groups | ({k8s_api.METRICS_API} if self.has_metrics else set())
@@ -155,6 +162,29 @@ class FakeClient:
         if not self.has_metrics:
             raise MetricsUnavailable
         return self._metrics
+
+    # --- the rest of the API surface -------------------------------------
+
+    async def get_one(self, api_version, kind, name, namespace=None, *, subresource=""):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            (api_version, f"{kind}/{name}" + (f"/{subresource}" if subresource else ""))
+        )
+        for obj in self.objects.get(kind, []):
+            if (obj.get("metadata") or {}).get("name") == name:
+                return obj
+        raise KeyError(f"no {kind}/{name}")
+
+    async def create(self, api_version, kind, body, namespace=None, *, dry_run=False):  # type: ignore[no-untyped-def]
+        self.created.append((kind, body, dry_run))
+        return self.reviews.get(kind, {"status": {"allowed": False}})
+
+    async def raw(self, method, path, *, body=None, **params):  # type: ignore[no-untyped-def]
+        self.raw_calls.append((method, path))
+        return self.raw_responses.get(path, {"raw": "ok"})
+
+    async def watch_until(self, api_version, kind, namespace, ready, **kw):  # type: ignore[no-untyped-def]
+        self.watches.append((kind, kw))
+        return self.watch_result
 
 
 class FakeProvider:
@@ -1082,3 +1112,193 @@ async def test_get_one_with_a_subresource_goes_through_the_subresource_path() ->
     client, dynamic = real_client()
     await client.get_one("apps/v1", "Deployment", "web", "shop", subresource="scale")
     assert dynamic.client.calls[0][1].endswith("/web/scale")
+
+
+# --------------------------------------------------- the rest of the surface
+
+
+SECRET_OBJ = {
+    "kind": "Secret",
+    "metadata": {
+        "name": "db-creds",
+        "namespace": "shop",
+        "managedFields": [{"manager": "kubectl"}],
+        "resourceVersion": "9",
+        "annotations": {"kubectl.kubernetes.io/last-applied-configuration": "{...}", "keep": "me"},
+    },
+    "data": {"password": "aHVudGVyMg=="},
+}
+
+
+async def test_get_returns_the_whole_object_as_yaml(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient({"Deployment": CLUSTER["Deployment"]})
+    out = await tool("k8s_get").run(
+        {"kind": "Deployment", "name": "web", "namespace": "shop"}, context_for(client, tmp_path)
+    )
+    assert not out.is_error
+    assert "replicas: 2" in out.content, "the spec the model is about to change"
+
+
+async def test_get_redacts_a_secret(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """k8s_get returns everything, which is exactly why redaction matters more
+    here than in k8s_list."""
+    client = FakeClient({"Secret": [SECRET_OBJ]})
+    out = await tool("k8s_get").run(
+        {"kind": "Secret", "name": "db-creds", "namespace": "shop"}, context_for(client, tmp_path)
+    )
+    assert "aHVudGVyMg" not in out.content
+    assert MARKER in out.content
+
+
+async def test_get_strips_server_bookkeeping_by_default(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient({"Secret": [SECRET_OBJ]})
+    ctx = context_for(client, tmp_path)
+    out = await tool("k8s_get").run({"kind": "Secret", "name": "db-creds"}, ctx)
+    assert "managedFields" not in out.content
+    assert "resourceVersion" not in out.content
+    assert "last-applied-configuration" not in out.content
+    assert "keep" in out.content, "only the noise goes"
+
+    verbose = await tool("k8s_get").run({"kind": "Secret", "name": "db-creds", "quiet": False}, ctx)
+    assert "managedFields" in verbose.content
+
+
+async def test_get_refuses_a_privileged_subresource_and_names_the_right_tool(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`get pods/exec` is code execution wearing a read verb. It must not be
+    reachable through the tool that asks for nothing."""
+    out = await tool("k8s_get").run(
+        {"kind": "Pod", "name": "web-1", "subresource": "exec"},
+        context_for(FakeClient(), tmp_path),
+    )
+    assert out.is_error
+    assert "k8s_exec" in out.content
+
+
+async def test_raw_reaches_a_non_resource_endpoint(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    client.raw_responses["/healthz"] = {"raw": "ok"}
+    out = await tool("k8s_raw").run({"path": "/healthz"}, context_for(client, tmp_path))
+    assert not out.is_error
+    assert "ok" in out.content
+    assert client.raw_calls == [("GET", "/healthz")]
+
+
+async def test_raw_refuses_a_privileged_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    out = await tool("k8s_raw").run(
+        {"path": "/api/v1/namespaces/shop/pods/web-1/exec"}, context_for(client, tmp_path)
+    )
+    assert out.is_error
+    assert "k8s_exec" in out.content
+    assert client.raw_calls == [], "nothing must reach the API server"
+
+
+async def test_raw_requires_an_absolute_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    out = await tool("k8s_raw").run({"path": "healthz"}, context_for(FakeClient(), tmp_path))
+    assert out.is_error
+
+
+async def test_can_i_asks_rbac_before_attempting(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    client.reviews["SelfSubjectAccessReview"] = {"status": {"allowed": True}}
+    out = await tool("k8s_can_i").run(
+        {"verb": "delete", "resource": "pods", "namespace": "shop"},
+        context_for(client, tmp_path),
+    )
+    assert not out.is_error
+    assert out.content.startswith("yes")
+    kind, body, _ = client.created[0]
+    assert kind == "SelfSubjectAccessReview"
+    assert body["spec"]["resourceAttributes"]["verb"] == "delete"
+
+
+async def test_can_i_reports_a_denial_with_the_reason(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    client.reviews["SelfSubjectAccessReview"] = {
+        "status": {"allowed": False, "reason": "no RoleBinding grants this"}
+    }
+    out = await tool("k8s_can_i").run(
+        {"verb": "delete", "resource": "nodes"}, context_for(client, tmp_path)
+    )
+    assert out.content.startswith("no")
+    assert "no RoleBinding grants this" in out.content
+
+
+async def test_can_i_without_a_verb_lists_every_rule(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    client.reviews["SelfSubjectRulesReview"] = {
+        "status": {"resourceRules": [{"verbs": ["get", "list"], "resources": ["pods"]}]}
+    }
+    out = await tool("k8s_can_i").run({"namespace": "shop"}, context_for(client, tmp_path))
+    assert "get,list" in out.content
+    assert client.created[0][0] == "SelfSubjectRulesReview"
+
+
+async def test_wait_needs_to_be_told_what_to_wait_for(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    out = await tool("k8s_wait").run(
+        {"kind": "Pod", "name": "web"}, context_for(FakeClient(), tmp_path)
+    )
+    assert out.is_error
+    assert "condition" in out.content
+
+
+async def test_wait_reports_the_transitions_it_saw_on_timeout(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A timeout that only says `not ready` is not a diagnosis."""
+    client = FakeClient()
+    client.watch_result = (
+        False,
+        [
+            {"type": "MODIFIED", "name": "web-1", "status": "Pending"},
+            {"type": "MODIFIED", "name": "web-1", "status": "CrashLoopBackOff"},
+        ],
+        "the condition was not met within 120s",
+    )
+    out = await tool("k8s_wait").run(
+        {"kind": "Pod", "name": "web-1", "condition": "Ready"}, context_for(client, tmp_path)
+    )
+    assert out.is_error
+    assert "CrashLoopBackOff" in out.content
+    assert out.summary == "timed out"
+
+
+async def test_wait_succeeds_when_the_condition_is_met(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    client = FakeClient()
+    client.watch_result = (
+        True,
+        [{"type": "MODIFIED", "name": "web-1", "status": "Running"}],
+        "met",
+    )
+    out = await tool("k8s_wait").run(
+        {"kind": "Pod", "name": "web-1", "condition": "Ready"}, context_for(client, tmp_path)
+    )
+    assert not out.is_error
+    assert out.summary == "condition met"
+
+
+async def test_wait_for_deletion_reads_absence_from_the_transitions() -> None:
+    """No state of an object means `gone`, so deletion is read from the event
+    stream rather than from a predicate."""
+    from wai.tools.k8s.reads import _predicate
+
+    ready = _predicate(deleted=True, condition="", want="", field="", value="")
+    assert ready({"status": {"phase": "Running"}}) is False
+
+
+def test_condition_and_field_predicates() -> None:
+    from wai.tools.k8s.reads import _condition_met, _field_equals
+
+    obj = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
+    assert _condition_met(obj, "Ready", "True")
+    assert _condition_met(obj, "ready", "true"), "type and status compare case-insensitively"
+    assert not _condition_met(obj, "Available", "True"), "a missing condition is not met"
+    assert _field_equals(obj, "status.phase", "Running")
+    assert not _field_equals(obj, "status.nope.deeper", "x"), "a missing path is not a crash"
+
+
+async def test_every_new_read_tool_is_read_only() -> None:
+    names = {"k8s_get", "k8s_raw", "k8s_can_i", "k8s_wait"}
+    for entry in k8s_tools():
+        if entry.name in names:
+            assert entry.read_only, f"{entry.name} must not need approval"
+            names.discard(entry.name)
+    assert not names, f"not registered: {names}"

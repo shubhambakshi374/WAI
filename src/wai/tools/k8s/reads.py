@@ -7,8 +7,10 @@ keeps a whole-cluster topology affordable in context."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, ClassVar
 
+from wai.cloud.kube import PRIVILEGED_SUBRESOURCES
 from wai.core.visuals import Table
 from wai.tools.base import ToolContext, ToolOutcome
 from wai.tools.k8s.base import MAX_LOG_LINES, K8sTool, _rows
@@ -222,4 +224,358 @@ class K8sLogsTool(K8sTool):
         lines = text.splitlines()
         return ToolOutcome(
             content="\n".join(lines) or "(no output)", summary=f"{len(lines)} log lines"
+        )
+
+
+#: Fields the API server maintains and nobody reads on purpose. Stripping them
+#: from a full object is most of the difference between a readable manifest and
+#: a wall of bookkeeping.
+NOISE_FIELDS = ("managedFields", "generation", "resourceVersion", "uid", "selfLink")
+
+
+def _quiet(obj: dict[str, Any]) -> dict[str, Any]:
+    meta = {k: v for k, v in (obj.get("metadata") or {}).items() if k not in NOISE_FIELDS}
+    annotations = meta.get("annotations") or {}
+    if "kubectl.kubernetes.io/last-applied-configuration" in annotations:
+        # A verbatim copy of the whole object, inside the object. It doubles
+        # the token cost of every `kubectl apply`-managed resource.
+        meta["annotations"] = {
+            k: v
+            for k, v in annotations.items()
+            if k != "kubectl.kubernetes.io/last-applied-configuration"
+        }
+    return {**obj, "metadata": meta}
+
+
+def _as_yaml(obj: Any) -> str:
+    import yaml
+
+    # allow_unicode, or safe_dump escapes anything non-ASCII: the redaction
+    # marker comes out as "\xABredacted by wai\xBB", and so does every label
+    # or annotation with an accent in it.
+    return str(
+        yaml.safe_dump(
+            obj, default_flow_style=False, sort_keys=False, width=100, allow_unicode=True
+        )
+    )
+
+
+class K8sGetTool(K8sTool):
+    name: ClassVar[str] = "k8s_get"
+    description: ClassVar[str] = (
+        "The full object, as YAML — every field, not the summary k8s_list gives. "
+        "Use it when you need the spec you are about to change, a status "
+        "condition, or an annotation. Also reads subresources: status, scale. "
+        "Secrets come back redacted."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "name": {"type": "string"},
+            "namespace": {"type": "string"},
+            "api_version": {"type": "string", "description": "Only if the kind is ambiguous."},
+            "subresource": {"type": "string", "description": "status or scale."},
+            "quiet": {
+                "type": "boolean",
+                "description": "Strip managedFields and other server bookkeeping. Default true.",
+            },
+        },
+        "required": ["kind", "name"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        kind, name = str(args.get("kind", "")).strip(), str(args.get("name", "")).strip()
+        if not kind or not name:
+            return ToolOutcome.error("kind and name are required")
+        subresource = str(args.get("subresource") or "").strip()
+        if subresource in PRIVILEGED_SUBRESOURCES:
+            return ToolOutcome.error(
+                f"{kind}/{name}/{subresource} is not a read. "
+                f"Use {_TOOL_FOR.get(subresource, 'the dedicated tool')} instead.",
+                summary="wrong tool",
+            )
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, context_name = resolved
+        namespace = str(args.get("namespace") or "default")
+        api_version = await client.resolve_kind(kind, str(args.get("api_version") or ""))
+
+        try:
+            obj = await client.get_one(api_version, kind, name, namespace, subresource=subresource)
+        except Exception as exc:
+            return ToolOutcome.error(f"could not get {kind}/{name}: {exc}", summary="failed")
+
+        obj = self.scrub(obj, ctx)
+        if args.get("quiet", True):
+            obj = _quiet(obj)
+        where = f"{kind}/{name}" + (f"/{subresource}" if subresource else "")
+        return ToolOutcome(
+            content=f"# {where} in {namespace} ({context_name})\n{_as_yaml(obj)}",
+            summary=where,
+        )
+
+
+#: Reached through k8s_get or k8s_raw, these would be a read that is not one.
+#: Naming the right tool is worth more than a refusal.
+_TOOL_FOR = {
+    "exec": "k8s_exec",
+    "attach": "k8s_attach",
+    "portforward": "k8s_port_forward",
+    "eviction": "k8s_drain",
+    "token": "k8s_create",
+    "approval": "k8s_patch",
+}
+
+
+class K8sRawTool(K8sTool):
+    name: ClassVar[str] = "k8s_raw"
+    description: ClassVar[str] = (
+        "GET any path the API server serves, for the endpoints that are not "
+        "resources: /healthz, /readyz, /livez, /version, /metrics, /apis, and "
+        "aggregated APIs. Prefer the typed tools for anything that is an object "
+        "— this is the escape hatch, not the front door."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "e.g. /healthz, /version, /apis"},
+        },
+        "required": ["path"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        path = str(args.get("path", "")).strip()
+        if not path.startswith("/"):
+            return ToolOutcome.error("path must be absolute, e.g. /healthz")
+        tail = path.rstrip("/").rsplit("/", 1)[-1].casefold()
+        if tail in PRIVILEGED_SUBRESOURCES:
+            return ToolOutcome.error(
+                f"/{tail} is a privileged operation, not a read. "
+                f"Use {_TOOL_FOR.get(tail, 'the dedicated tool')}, which asks first.",
+                summary="wrong tool",
+            )
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, context_name = resolved
+
+        try:
+            payload = await client.raw("GET", path)
+        except Exception as exc:
+            return ToolOutcome.error(f"GET {path} failed: {exc}", summary="failed")
+
+        payload = self.scrub(payload, ctx)
+        body = payload["raw"] if set(payload) == {"raw"} else _as_yaml(payload)
+        text = str(body)
+        if len(text) > 8000:
+            text = text[:8000] + "\n[truncated]"
+        return ToolOutcome(content=f"# GET {path} ({context_name})\n{text}", summary=path)
+
+
+class K8sCanITool(K8sTool):
+    name: ClassVar[str] = "k8s_can_i"
+    description: ClassVar[str] = (
+        "Ask the cluster's RBAC whether these credentials may do something, "
+        "BEFORE attempting it. Cheaper and clearer than discovering a 403 "
+        "halfway through a plan. Omit verb and resource to list everything "
+        "you are allowed to do in a namespace."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "verb": {"type": "string", "description": "get, list, create, delete, patch…"},
+            "resource": {"type": "string", "description": "Plural, e.g. pods, deployments."},
+            "namespace": {"type": "string"},
+            "subresource": {"type": "string", "description": "e.g. exec, log."},
+            "name": {"type": "string", "description": "A specific object, if it matters."},
+            "group": {"type": "string", "description": "API group, e.g. apps. Empty for core."},
+        },
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, context_name = resolved
+        namespace = str(args.get("namespace") or "default")
+        verb = str(args.get("verb") or "").strip()
+        resource = str(args.get("resource") or "").strip()
+
+        if not verb or not resource:
+            return await self._rules(client, context_name, namespace)
+
+        attributes = {
+            "namespace": namespace,
+            "verb": verb,
+            "resource": resource,
+            "group": str(args.get("group") or ""),
+        }
+        for key in ("subresource", "name"):
+            if args.get(key):
+                attributes[key] = str(args[key])
+        body = {
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectAccessReview",
+            "spec": {"resourceAttributes": attributes},
+        }
+        try:
+            result = await client.create("authorization.k8s.io/v1", "SelfSubjectAccessReview", body)
+        except Exception as exc:
+            return ToolOutcome.error(f"the access review failed: {exc}", summary="failed")
+
+        status = result.get("status") or {}
+        allowed = bool(status.get("allowed"))
+        what = f"{verb} {resource}"
+        if args.get("subresource"):
+            what += f"/{args['subresource']}"
+        verdict = "yes" if allowed else "no"
+        reason = status.get("reason") or ""
+        detail = f" — {reason}" if reason else ""
+        return ToolOutcome(
+            content=f"{verdict}: you may{'' if allowed else ' not'} {what} "
+            f"in {namespace} ({context_name}){detail}",
+            summary=f"{verdict}: {what}",
+        )
+
+    async def _rules(self, client: Any, context_name: str, namespace: str) -> ToolOutcome:
+        """Everything the credentials may do here. The broad question."""
+        body = {
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectRulesReview",
+            "spec": {"namespace": namespace},
+        }
+        try:
+            result = await client.create("authorization.k8s.io/v1", "SelfSubjectRulesReview", body)
+        except Exception as exc:
+            return ToolOutcome.error(f"the rules review failed: {exc}", summary="failed")
+
+        rules = (result.get("status") or {}).get("resourceRules") or []
+        lines = []
+        for rule in rules[:80]:
+            verbs = ",".join(rule.get("verbs") or [])
+            resources = ",".join(rule.get("resources") or [])
+            if verbs and resources:
+                lines.append(f"  {verbs:<40} {resources}")
+        head = f"what you may do in {namespace} ({context_name}):"
+        return ToolOutcome(
+            content="\n".join([head, *lines]) or f"{head}\n  (nothing)",
+            summary=f"{len(rules)} rules",
+        )
+
+
+def _condition_met(obj: dict[str, Any], condition: str, want: str) -> bool:
+    for entry in (obj.get("status") or {}).get("conditions") or []:
+        if str(entry.get("type", "")).casefold() == condition.casefold():
+            return str(entry.get("status", "")).casefold() == want.casefold()
+    return False
+
+
+def _predicate(
+    *, deleted: bool, condition: str, want: str, field: str, value: str
+) -> Callable[[dict[str, Any]], bool]:
+    """What counts as done. Deletion is the odd one: no state of the object
+    satisfies it, so the watch runs to its bound and absence is read from the
+    transition list instead."""
+    if deleted:
+        return lambda _obj: False
+    if condition:
+        return lambda obj: _condition_met(obj, condition, want)
+    return lambda obj: _field_equals(obj, field, value)
+
+
+def _field_equals(obj: dict[str, Any], path: str, want: str) -> bool:
+    cursor: Any = obj
+    for part in path.split("."):
+        if not isinstance(cursor, dict):
+            return False
+        cursor = cursor.get(part)
+    return str(cursor) == want
+
+
+class K8sWaitTool(K8sTool):
+    name: ClassVar[str] = "k8s_wait"
+    description: ClassVar[str] = (
+        "Watch an object until a condition holds, or give up. Use this after a "
+        "change instead of listing repeatedly — it reports the transitions it "
+        "saw, so a timeout tells you WHY (image pull, then CrashLoopBackOff) "
+        "rather than just that it did not happen. Always bounded."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "name": {"type": "string", "description": "Omit to watch by label."},
+            "namespace": {"type": "string"},
+            "api_version": {"type": "string"},
+            "label_selector": {"type": "string"},
+            "condition": {
+                "type": "string",
+                "description": "Condition type, e.g. Ready, Available, Complete.",
+            },
+            "status": {"type": "string", "description": "Expected value. Default True."},
+            "field": {"type": "string", "description": "Dotted path, e.g. status.phase."},
+            "value": {"type": "string", "description": "Expected value for `field`."},
+            "deleted": {"type": "boolean", "description": "Wait for the object to go away."},
+            "timeout": {"type": "integer", "description": "Seconds, capped at 600. Default 120."},
+        },
+        "required": ["kind"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        kind = str(args.get("kind", "")).strip()
+        if not kind:
+            return ToolOutcome.error("kind is required")
+
+        condition = str(args.get("condition") or "").strip()
+        field = str(args.get("field") or "").strip()
+        deleted = bool(args.get("deleted"))
+        if not (condition or field or deleted):
+            return ToolOutcome.error(
+                "say what to wait for: condition, field and value, or deleted",
+                summary="no condition",
+            )
+
+        resolved = await self.client(ctx)
+        if isinstance(resolved, ToolOutcome):
+            return resolved
+        client, context_name = resolved
+        namespace = str(args.get("namespace") or "default")
+        name = str(args.get("name") or "").strip() or None
+        api_version = await client.resolve_kind(kind, str(args.get("api_version") or ""))
+
+        ready = _predicate(
+            deleted=deleted,
+            condition=condition,
+            want=str(args.get("status") or "True"),
+            field=field,
+            value=str(args.get("value") or ""),
+        )
+        try:
+            satisfied, transitions, why = await client.watch_until(
+                api_version,
+                kind,
+                namespace,
+                ready,
+                name=name,
+                label_selector=args.get("label_selector"),
+                timeout_seconds=float(args.get("timeout") or 120),
+            )
+        except Exception as exc:
+            return ToolOutcome.error(f"the watch failed: {exc}", summary="failed")
+
+        if deleted:
+            satisfied = any(t.get("type") == "DELETED" for t in transitions)
+            why = "the object was deleted" if satisfied else why
+
+        seen = [f"  {t['type']:<10} {t['name']:<40} {t['status']}" for t in transitions[-20:]]
+        target = f"{kind}/{name}" if name else f"{kind} ({args.get('label_selector') or 'all'})"
+        head = (
+            f"{'met' if satisfied else 'NOT met'}: {target} in {namespace} ({context_name}) — {why}"
+        )
+        return ToolOutcome(
+            content="\n".join([head, *seen]) if seen else f"{head}\n  (no events seen)",
+            summary="condition met" if satisfied else "timed out",
+            is_error=not satisfied,
         )
