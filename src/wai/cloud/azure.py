@@ -29,6 +29,7 @@ ARM_SCOPE = "https://management.azure.com/.default"
 #: Pinned where the endpoint is a fixed, well-known one rather than a resource
 #: type whose version has to be resolved.
 PROVIDERS_API = "2021-04-01"
+PROVIDER_OPERATIONS_API = "2022-04-01"
 SUBSCRIPTIONS_API = "2022-12-01"
 RESOURCE_GRAPH_API = "2022-10-01"
 LOCKS_API = "2016-09-01"
@@ -488,6 +489,22 @@ class AzureProvider:
         if namespace:
             path += f"/{namespace}"
         return await self.call("GET", path, api_version=PROVIDERS_API)
+
+    async def provider_operations(self, namespace: str) -> dict[str, Any]:
+        """The RBAC operations a provider defines, with their descriptions.
+
+        Azure's answer to botocore's service models, and the reason
+        ``azure_explain`` can hand over an exact contract instead of leaving
+        the model to guess. Unlike botocore's, it is a network call --- which
+        is why the classification tests sweep a generated grammar rather than
+        a shipped corpus.
+        """
+        return await self.call(
+            "GET",
+            f"/providers/Microsoft.Authorization/providerOperations/{namespace}",
+            api_version=PROVIDER_OPERATIONS_API,
+            params={"$expand": "resourceTypes"},
+        )
 
     async def api_version_for(self, namespace: str, resource_type: str) -> str:
         """The version to send for one resource type.

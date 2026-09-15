@@ -158,6 +158,15 @@ async def verify(cloud: str) -> str:
             return f"account {identity['Account']} · {identity['Arn']}"
 
         return await asyncio.to_thread(_whoami)
+    if cloud == "azure":
+        from wai.cloud.azure import AzureProvider
+
+        provider = AzureProvider()
+        try:
+            identity = await provider.whoami()
+        finally:
+            await provider.close()
+        return f"tenant {identity['tenant']} · {identity['principal'] or identity['object_id']}"
     if cloud == "k8s":
         from wai.cloud.kube import list_contexts
 

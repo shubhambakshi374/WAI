@@ -368,3 +368,267 @@ def test_target_for_feeds_the_protection_rules() -> None:
     rules = ProtectionRules.build([], ["0000"], "confirm")
     assert rules.matches(az.target_for("0000", "westeurope", "rg"))
     assert not rules.matches(az.target_for("1111", "westeurope", "rg"))
+
+
+# ------------------------------------------------------------------ the tools
+
+from typing import Any  # noqa: E402
+
+from wai.config.models import AzureSettings, CloudSettings  # noqa: E402
+from wai.tools import default_registry  # noqa: E402
+from wai.tools.azure import azure_tools  # noqa: E402
+from wai.tools.base import CloudContext, ToolContext  # noqa: E402
+from wai.workspace import Workspace  # noqa: E402
+
+IDENTITY = {
+    "tenant": "t-0000",
+    "principal": "dev@example.com",
+    "object_id": "o-1111",
+    "subscription": "sub-0000",
+}
+
+
+class FakeAzure:
+    """An AzureProvider's shape, recording every request."""
+
+    def __init__(self, responses: dict[str, Any] | None = None, *, fail: str = "") -> None:
+        self.responses = responses or {}
+        self.fail = fail
+        self.subscription = "sub-0000"
+        self.requests: list[tuple[str, str]] = []
+        self.locks_found: list[dict[str, str]] = []
+        self.access = "Allowed"
+        self.graph_queries: list[str] = []
+
+    async def whoami(self) -> dict[str, str]:
+        return dict(IDENTITY)
+
+    async def subscriptions(self) -> list[dict[str, str]]:
+        return [
+            {"id": "sub-0000", "name": "dev", "state": "Enabled", "tenant": "t-0000"},
+            {"id": "sub-9999", "name": "prod", "state": "Enabled", "tenant": "t-0000"},
+        ]
+
+    async def providers(self, namespace: str = "") -> dict[str, Any]:
+        if not namespace:
+            return {"value": [{"namespace": "Microsoft.Compute"}, {"namespace": "Microsoft.Web"}]}
+        return {
+            "resourceTypes": [
+                {
+                    "resourceType": "virtualMachines",
+                    "apiVersions": ["2024-07-01-preview", "2024-03-01"],
+                    "locations": ["westeurope", "eastus"],
+                }
+            ]
+        }
+
+    async def provider_operations(self, namespace: str) -> dict[str, Any]:
+        return {
+            "name": namespace,
+            "resourceTypes": [
+                {
+                    "name": "virtualMachines",
+                    "operations": [
+                        {
+                            "name": f"{namespace}/virtualMachines/read",
+                            "description": "Get the properties of a virtual machine",
+                            "isDataAction": False,
+                        },
+                        {
+                            "name": f"{namespace}/virtualMachines/delete",
+                            "description": "Delete a virtual machine",
+                            "isDataAction": False,
+                        },
+                    ],
+                }
+            ],
+        }
+
+    async def api_version_for(self, namespace: str, resource_type: str) -> str:
+        if resource_type.casefold() != "virtualmachines":
+            raise az.ArmError(404, "UnknownResourceType", f"no such type {resource_type}")
+        return "2024-03-01"
+
+    async def call(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
+        self.requests.append((method.upper(), path))
+        if self.fail and self.fail in path:
+            raise az.ArmError(403, "AuthorizationFailed", "denied")
+        return dict(self.responses.get(path, {"value": []}))
+
+    async def graph(self, query: str, subscriptions: list[str] | None = None) -> dict[str, Any]:
+        self.graph_queries.append(query)
+        return dict(self.responses.get("graph", {"data": []}))
+
+    async def locks(self, scope: str) -> list[dict[str, str]]:
+        return list(self.locks_found)
+
+    async def check_access(self, scope: str, actions: list[str]) -> list[dict[str, str]]:
+        return [{"action": a, "decision": self.access} for a in actions]
+
+    @property
+    def methods(self) -> set[str]:
+        return {method for method, _path in self.requests}
+
+
+def context(
+    tmp_path: Any,
+    provider: FakeAzure | None = None,
+    *,
+    settings: AzureSettings | None = None,
+    protection: Any = None,
+    approvals: Any = None,
+) -> ToolContext:
+    from wai.tools.approval import AllowAll
+
+    return ToolContext(
+        workspace=Workspace([tmp_path]),
+        approvals=approvals or AllowAll(),
+        cloud=CloudContext(
+            azure=provider,
+            azure_subscription="sub-0000",
+            azure_settings=settings or AzureSettings(),
+            protection=protection,
+        ),
+    )
+
+
+def tool(name: str) -> Any:
+    found = next((t for t in azure_tools() if t.name == name), None)
+    assert found is not None, name
+    return found
+
+
+async def test_whoami_names_the_subscription(tmp_path: Any) -> None:
+    outcome = await tool("azure_whoami").run({}, context(tmp_path, FakeAzure()))
+    assert "sub-0000" in outcome.content
+    assert "dev@example.com" in outcome.content
+    assert "PROTECTED" not in outcome.content
+
+
+async def test_whoami_warns_when_the_subscription_is_protected(tmp_path: Any) -> None:
+    from wai.cloud.base import ProtectionRules
+
+    rules = ProtectionRules.build([], ["sub-0000"], "confirm")
+    outcome = await tool("azure_whoami").run({}, context(tmp_path, FakeAzure(), protection=rules))
+    assert "PROTECTED" in outcome.content
+
+
+async def test_tools_refuse_clearly_without_a_session(tmp_path: Any) -> None:
+    """A missing extra is a visible absence, not an import error at call time."""
+    outcome = await tool("azure_whoami").run({}, context(tmp_path, None))
+    assert outcome.is_error
+    assert "uv sync --extra azure" in outcome.content
+
+
+async def test_subscriptions_marks_the_active_one(tmp_path: Any) -> None:
+    outcome = await tool("azure_subscriptions").run({}, context(tmp_path, FakeAzure()))
+    assert "sub-9999" in outcome.content
+    assert "→" in outcome.content
+
+
+async def test_providers_lists_api_versions(tmp_path: Any) -> None:
+    outcome = await tool("azure_providers").run(
+        {"namespace": "Microsoft.Compute"}, context(tmp_path, FakeAzure())
+    )
+    assert "virtualMachines" in outcome.content
+    assert "2024-07-01-preview" in outcome.content
+
+
+async def test_explain_classifies_each_operation(tmp_path: Any) -> None:
+    outcome = await tool("azure_explain").run(
+        {"namespace": "Microsoft.Compute", "type": "virtualMachines"},
+        context(tmp_path, FakeAzure()),
+    )
+    assert "api-version: 2024-03-01" in outcome.content
+    assert "read" in outcome.content
+    assert "privileged" in outcome.content  # the delete
+
+
+async def test_get_issues_only_get(tmp_path: Any) -> None:
+    """The read-only property is structural, not a rule the tool remembers.
+
+    ARM's read verb is GET, and the operations that look like reads but hand
+    back credentials are POSTs --- so they cannot arrive here at all.
+    """
+    provider = FakeAzure({RESOURCE_SCOPE: {"name": "vm", "location": "westeurope"}})
+    outcome = await tool("azure_get").run({"id": RESOURCE_SCOPE}, context(tmp_path, provider))
+    assert not outcome.is_error
+    assert provider.methods == {"GET"}
+    assert "api-version 2024-03-01" in outcome.content
+
+
+async def test_get_resolves_the_api_version_it_was_not_given(tmp_path: Any) -> None:
+    provider = FakeAzure()
+    await tool("azure_get").run(
+        {"namespace": "Microsoft.Compute", "type": "virtualMachines"},
+        context(tmp_path, provider),
+    )
+    assert provider.requests == [
+        ("GET", "/subscriptions/sub-0000/providers/Microsoft.Compute/virtualMachines")
+    ]
+
+
+async def test_get_reports_an_unresolvable_type_instead_of_guessing(tmp_path: Any) -> None:
+    """Guessing an api-version fails in a way that looks like the resource is
+    gone, which is the worst available answer."""
+    provider = FakeAzure()
+    outcome = await tool("azure_get").run(
+        {"namespace": "Microsoft.Compute", "type": "nonesuch"}, context(tmp_path, provider)
+    )
+    assert outcome.is_error
+    assert provider.requests == []
+
+
+async def test_get_rejects_something_that_is_not_a_resource_id(tmp_path: Any) -> None:
+    outcome = await tool("azure_get").run({"id": "web1"}, context(tmp_path, FakeAzure()))
+    assert outcome.is_error
+    assert "not an ARM resource id" in outcome.content
+
+
+async def test_get_redacts_before_the_model_sees_it(tmp_path: Any) -> None:
+    """Tool results are transmitted to the LLM provider, so redaction is the
+    control that matters, not an extra."""
+    from wai.cloud.redact import MARKER
+
+    provider = FakeAzure({RESOURCE_SCOPE: {"properties": {"adminPassword": "hunter2"}}})
+    outcome = await tool("azure_get").run({"id": RESOURCE_SCOPE}, context(tmp_path, provider))
+    assert "hunter2" not in outcome.content
+    assert MARKER in outcome.content
+
+
+async def test_query_runs_kql_against_the_active_subscription(tmp_path: Any) -> None:
+    provider = FakeAzure({"graph": {"data": [{"name": "web1", "location": "westeurope"}]}})
+    outcome = await tool("azure_query").run(
+        {"query": "resources | project name, location"}, context(tmp_path, provider)
+    )
+    assert "web1" in outcome.content
+    assert outcome.visual is not None
+    assert provider.graph_queries == ["resources | project name, location"]
+
+
+async def test_can_i_reports_the_decision_and_the_sensitivity(tmp_path: Any) -> None:
+    outcome = await tool("azure_can_i").run(
+        {"actions": ["Microsoft.Compute/virtualMachines/delete"]},
+        context(tmp_path, FakeAzure()),
+    )
+    assert "Allowed" in outcome.content
+    assert "privileged" in outcome.content
+    assert outcome.summary == "1/1 allowed"
+
+
+def test_every_read_tool_is_declared_read_only() -> None:
+    """A read-only registry must not carry a change, and `read_only` is what
+    decides --- so it has to be right on every one of these."""
+    assert all(t.read_only for t in azure_tools())
+
+
+def test_the_registry_registers_azure_when_it_is_asked_to(tmp_path: Any) -> None:
+    registry = default_registry(kubernetes=False, aws=False, azure=True, cloud=CloudSettings())
+    assert "azure_get" in registry
+    assert "azure_query" in registry
+    assert "aws_call" not in registry
+
+
+def test_the_registry_leaves_azure_out_when_it_is_not(tmp_path: Any) -> None:
+    registry = default_registry(kubernetes=False, aws=False, azure=False, cloud=CloudSettings())
+    assert not any(name.startswith("azure_") for name in registry.names)

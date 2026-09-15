@@ -78,6 +78,7 @@ def default_registry(
     writes: bool = True,
     kubernetes: bool | None = None,
     aws: bool | None = None,
+    azure: bool | None = None,
     cloud: Any = None,
 ) -> ToolRegistry:
     """The tool set for a session.
@@ -90,9 +91,9 @@ def default_registry(
 
     ``cloud`` is a ``CloudSettings``; None means every class is on.
 
-    ``kubernetes`` and ``aws`` default to autodetection from what is installed.
-    Pass False for either to build a registry without it --- which is what a
-    test wanting only the filesystem tools should do.
+    ``kubernetes``, ``aws`` and ``azure`` default to autodetection from what is
+    installed. Pass False for any of them to build a registry without it ---
+    which is what a test wanting only the filesystem tools should do.
     """
     tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
     if writes:
@@ -119,6 +120,16 @@ def default_registry(
         from wai.tools.aws import aws_tools
 
         tools += list(aws_tools(getattr(cloud, "aws", None)))
+
+    if azure is None:
+        from wai.cloud.base import integration
+
+        azure_entry = integration("azure")
+        azure = bool(azure_entry and azure_entry.available)
+    if azure:
+        from wai.tools.azure import azure_tools
+
+        tools += list(azure_tools(getattr(cloud, "azure", None)))
 
     if _cli_enabled(cloud):
         from wai.tools.cli import cli_tools
