@@ -8,7 +8,7 @@ picture that drops the limit is prettier and less useful.
 
 from __future__ import annotations
 
-from wai.core.visuals import Bars, Gauge, Series
+from wai.core.visuals import Bars, Chart, Gauge, Series
 from wai.render.canvas import Canvas, View
 from wai.render.palette import Palette
 
@@ -155,24 +155,47 @@ def draw_gauge(model: Gauge, canvas: Canvas, palette: Palette, view: View) -> No
     _caption(canvas, palette, model.caption)
 
 
-def draw_series(model: Series, canvas: Canvas, palette: Palette, view: View) -> None:
-    """A line with real axes.
+def _clock(stamp: float) -> str:
+    from datetime import UTC, datetime
 
-    This is the variant the terminal served worst: a sparkline has no axis, so
-    it shows a shape and hides every number. Here the extremes are labelled.
+    return datetime.fromtimestamp(stamp, UTC).strftime("%H:%M")
+
+
+def draw_series(model: Series, canvas: Canvas, palette: Palette, view: View) -> None:
+    """One line. Kept as its own entry point because a lone Series is the
+    common case and should not have to be wrapped in a Chart to be drawn."""
+    draw_chart(
+        Chart(title=model.title, series=[model], unit=model.unit, caption=model.caption),
+        canvas,
+        palette,
+        view,
+    )
+
+
+def draw_chart(model: Chart, canvas: Canvas, palette: Palette, view: View) -> None:
+    """Several lines on shared axes.
+
+    Shared is the point: comparison is why a chart holds more than one series,
+    and giving each its own scale would invite exactly the wrong reading.
     """
     y = _header(canvas, palette, model.title, PAD)
-    points = model.points
-    bottom = canvas.height - PAD - (LABEL_SIZE + 6 if model.caption else 0) - LABEL_SIZE - 4
-    left = PAD + 44
+    lines = [line for line in model.series if len(line.points) >= 2]
+    # The legend needs a row of its own. Drawn at the top of the plot area it
+    # lands on the title's descenders, which is where it was.
+    legend = [line for line in lines if line.label] if len(lines) > 1 else []
+    if legend:
+        y += 14
+    bottom = canvas.height - PAD - (LABEL_SIZE + 6 if model.caption else 0) - LABEL_SIZE - 6
+    left = PAD + 46
     right = canvas.width - PAD
 
-    if len(points) < 2:
+    if not lines:
         canvas.text((PAD, y), "(not enough data)", fill=palette.muted, size=LABEL_SIZE)
         _caption(canvas, palette, model.caption)
         return
 
-    low, high = min(points), max(points)
+    low = min(min(line.points) for line in lines)
+    high = max(max(line.points) for line in lines)
     span = (high - low) or 1.0
     # Pad the range so a flat line does not sit exactly on the axis.
     low, high = low - span * 0.08, high + span * 0.08
@@ -189,18 +212,59 @@ def draw_series(model: Series, canvas: Canvas, palette: Palette, view: View) -> 
             anchor="rm",
         )
 
-    span_x = right - left
-    plotted = [
-        (left + span_x * index / (len(points) - 1), bottom - (value - low) / span * (bottom - y))
-        for index, value in enumerate(points)
-    ]
-    canvas.line(plotted, fill=palette.accent, width=1.6)
-    canvas.dot(plotted[-1], 2.5, fill=palette.accent)
-    canvas.text(
-        (right, bottom + 4),
-        f"{_fmt(points[-1])}{model.unit}",
-        fill=palette.ink,
-        size=LABEL_SIZE,
-        anchor="rt",
-    )
+    # A time axis where the timestamps are there, and nothing where they are
+    # not --- inventing evenly spaced ticks for irregular samples would be a
+    # graph that lies about when things happened.
+    timed = [line for line in lines if line.timed]
+    if timed:
+        stamps = [stamp for line in timed for stamp in line.at]
+        first, last = min(stamps), max(stamps)
+        if last > first:
+            for fraction in (0.0, 0.5, 1.0):
+                at_x = left + (right - left) * fraction
+                canvas.text(
+                    (at_x, bottom + 5),
+                    _clock(first + (last - first) * fraction),
+                    fill=palette.muted,
+                    size=9,
+                    anchor="mt" if fraction == 0.5 else ("lt" if fraction == 0.0 else "rt"),
+                )
+
+    palettes = [palette.accent, palette.ok, palette.warn, palette.error, palette.muted]
+    legend_x = float(left)
+    for index, line in enumerate(lines):
+        colour = palettes[index % len(palettes)]
+        if line.timed:
+            stamps = [stamp for entry in timed for stamp in entry.at] or line.at
+            first, last = min(stamps), max(stamps)
+            width = (last - first) or 1.0
+            positions = [left + (right - left) * ((stamp - first) / width) for stamp in line.at]
+        else:
+            positions = [
+                left + (right - left) * step / (len(line.points) - 1)
+                for step in range(len(line.points))
+            ]
+        plotted = [
+            (at_x, bottom - (value - low) / span * (bottom - y))
+            for at_x, value in zip(positions, line.points, strict=True)
+        ]
+        canvas.line(plotted, fill=colour, width=1.6)
+        canvas.dot(plotted[-1], 2.5, fill=colour)
+
+        if line in legend:
+            canvas.dot((legend_x + 3, y - 8), 3, fill=colour)
+            canvas.text((legend_x + 10, y - 8), line.label, fill=palette.muted, size=9, anchor="lm")
+            legend_x += 16 + canvas.measure(line.label, size=9)
+
+    if not timed:
+        # Where there is no clock, the last value is the most useful label the
+        # right-hand edge can carry. With a clock, that space is the end time.
+        latest = lines[-1]
+        canvas.text(
+            (right, bottom + 5),
+            f"{_fmt(latest.points[-1])}{latest.unit or model.unit}",
+            fill=palette.ink,
+            size=LABEL_SIZE,
+            anchor="rt",
+        )
     _caption(canvas, palette, model.caption)

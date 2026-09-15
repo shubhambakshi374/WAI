@@ -14,7 +14,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from wai.core.visuals import Bars, Gauge, ResourceGraph, Series, Visual, VisualGroup
+from wai.core.visuals import (
+    Bars,
+    Chart,
+    Gauge,
+    ResourceGraph,
+    Series,
+    Visual,
+    VisualGroup,
+)
 from wai.render.canvas import Canvas, View
 from wai.render.palette import DARK, LIGHT, Palette
 
@@ -78,6 +86,8 @@ def render(
             charts.draw_gauge(visual, canvas, palette, resolved)
         case Series():
             charts.draw_series(visual, canvas, palette, resolved)
+        case Chart():
+            charts.draw_chart(visual, canvas, palette, resolved)
         case ResourceGraph():
             hits = graph.draw_graph(visual, canvas, palette, resolved)
         case _:
@@ -91,7 +101,7 @@ def render(
 
 def renderable(visual: Visual) -> bool:
     """Whether ``render`` would draw this, without drawing it."""
-    return isinstance(visual, Bars | Gauge | Series | ResourceGraph)
+    return isinstance(visual, Bars | Gauge | Series | Chart | ResourceGraph)
 
 
 __all__ = [

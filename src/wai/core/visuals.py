@@ -105,8 +105,22 @@ class Series(BaseModel):
     type: Literal["series"] = "series"
     title: str = ""
     points: list[float] = Field(default_factory=list)
+    at: list[float] = Field(default_factory=list)
+    """Unix timestamps, one per point. Optional and additive.
+
+    Without them there is no time axis, only a shape --- a sparkline can say
+    "it went up" and cannot say when or how fast. Length is not enforced by the
+    schema; ``timed`` is the check, so a mismatched pair degrades to an
+    unlabelled shape rather than raising at render time.
+    """
     unit: str = ""
     caption: str = ""
+    label: str = ""
+    """Names this line when several share a Chart's axes."""
+
+    @property
+    def timed(self) -> bool:
+        return len(self.at) == len(self.points) and len(self.points) > 1
 
     def to_text(self) -> str:
         if not self.points:
@@ -392,8 +406,40 @@ class VisualGroup(BaseModel):
         return "\n\n".join(p for p in parts if p)
 
 
+class Chart(BaseModel):
+    """Several series on one pair of axes.
+
+    A separate variant rather than a list on ``Series`` because the point is
+    comparison: these lines share a scale, and two charts side by side with
+    different scales invite exactly the wrong reading.
+    """
+
+    type: Literal["chart"] = "chart"
+    title: str = ""
+    series: list[Series] = Field(default_factory=list)
+    unit: str = ""
+    caption: str = ""
+
+    @property
+    def timed(self) -> bool:
+        return bool(self.series) and all(line.timed for line in self.series)
+
+    def to_text(self) -> str:
+        if not self.series:
+            return f"{self.title}\n  (no data)".strip()
+        parts = [self.title] if self.title else []
+        for line in self.series:
+            rendered = line.to_text()
+            if line.label and not line.title:
+                rendered = f"{line.label}\n{rendered}"
+            parts.append(rendered)
+        if self.caption:
+            parts.append(f"  {self.caption}")
+        return "\n".join(p for p in parts if p)
+
+
 Visual = Annotated[
-    Bars | Series | Table | Gauge | ResourceGraph | VisualGroup,
+    Bars | Series | Chart | Table | Gauge | ResourceGraph | VisualGroup,
     Field(discriminator="type"),
 ]
 

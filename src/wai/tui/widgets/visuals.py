@@ -19,6 +19,7 @@ from textual.widgets import DataTable, Label, Sparkline, Static
 
 from wai.core.visuals import (
     Bars,
+    Chart,
     Gauge,
     ResourceGraph,
     Series,
@@ -105,6 +106,26 @@ class SeriesView(Vertical):
             yield Sparkline(self.model.points)
         else:
             yield Label("(no data)")
+        if self.model.caption:
+            yield Label(self.model.caption, markup=False)
+
+
+class ChartView(Vertical):
+    """Several series, stacked. The terminal has one row of blocks per line,
+    so comparison is by reading them against each other rather than by shared
+    axes --- which is exactly what the image rendering adds."""
+
+    DEFAULT_CSS = "ChartView { height: auto; }"
+
+    def __init__(self, model: Chart) -> None:
+        super().__init__()
+        self.model = model
+
+    def compose(self) -> ComposeResult:
+        if self.model.title:
+            yield Label(self.model.title, markup=False)
+        for line in self.model.series:
+            yield Static(line.to_text(), markup=False)
         if self.model.caption:
             yield Label(self.model.caption, markup=False)
 
@@ -207,6 +228,8 @@ def build_text_view(model: Visual) -> Static | Vertical:
             return BarsView(model)
         case Series():
             return SeriesView(model)
+        case Chart():
+            return ChartView(model)
         case Table():
             return TableView(model)
         case Gauge():

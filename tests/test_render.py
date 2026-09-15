@@ -626,3 +626,88 @@ def test_tmux_gets_its_own_explanation_rather_than_the_generic_one() -> None:
 
     message = explain("auto", {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", "TMUX": "/tmp/x"})
     assert "tmux" in message
+
+
+# ------------------------------------------------------------ time series
+
+
+def _timed(label: str, points: list[float], start: float = 1_700_000_000.0) -> Series:
+    return Series(
+        label=label,
+        points=points,
+        at=[start + index * 60 for index in range(len(points))],
+        unit="m",
+    )
+
+
+def test_a_series_knows_whether_it_has_a_clock() -> None:
+    """Without timestamps there is no time axis, only a shape."""
+    assert _timed("web", [1, 2, 3]).timed
+    assert not Series(points=[1, 2, 3]).timed
+    assert not Series(points=[1, 2, 3], at=[1, 2]).timed, "a mismatched pair is not timed"
+    assert not Series(points=[1], at=[1]).timed, "one point is not a series"
+
+
+def test_timestamps_are_additive_and_optional() -> None:
+    """Existing callers pass no `at` and must keep working exactly as before."""
+    from pydantic import TypeAdapter
+
+    from wai.core.visuals import Visual
+
+    plain = Series(title="restarts", points=[0, 1, 3])
+    assert plain.at == []
+    round_tripped = TypeAdapter(Visual).validate_json(plain.model_dump_json())
+    assert round_tripped == plain
+
+
+def test_a_chart_draws_several_lines() -> None:
+    from wai.core.visuals import Chart
+
+    model = Chart(title="CPU", series=[_timed("web", [1, 2, 3]), _timed("api", [3, 2, 1])])
+    out = render(model, size=(620, 240))
+    assert out is not None
+    assert renderable(model)
+
+
+def test_a_chart_with_nothing_in_it_still_draws() -> None:
+    from wai.core.visuals import Chart
+
+    assert render(Chart(title="CPU", series=[]), size=(320, 160)) is not None
+
+
+def test_lines_of_different_lengths_share_one_scale() -> None:
+    """Shared axes are the point of a chart. Per-line scales would invite
+    exactly the wrong comparison."""
+    from wai.core.visuals import Chart
+
+    model = Chart(series=[_timed("a", [1, 2]), _timed("b", [100, 200, 300])])
+    assert render(model, size=(620, 240)) is not None
+
+
+def test_a_chart_mixing_timed_and_untimed_lines_draws() -> None:
+    from wai.core.visuals import Chart
+
+    model = Chart(series=[_timed("a", [1, 2, 3]), Series(label="b", points=[3, 2, 1])])
+    assert render(model, size=(620, 240)) is not None
+    assert not model.timed, "only fully timed charts get a clock"
+
+
+def test_the_chart_variant_joined_the_union_without_breaking_it() -> None:
+    from pydantic import TypeAdapter
+
+    from wai.core.visuals import Bars, Chart, Gauge, Table, Visual
+
+    adapter = TypeAdapter(Visual)
+    for model in (Bars(), Gauge(), Table(), Series(), Chart()):
+        assert adapter.validate_json(model.model_dump_json()) == model
+
+
+def test_a_chart_says_something_useful_in_text() -> None:
+    """The terminal path has to keep working: this is what a pipe, CI and a
+    dumb terminal get."""
+    from wai.core.visuals import Chart
+
+    text = Chart(
+        title="CPU", series=[_timed("web", [1, 2, 3]), _timed("api", [3, 2, 1])], caption="2m"
+    ).to_text()
+    assert "CPU" in text and "web" in text and "api" in text and "2m" in text
