@@ -16,6 +16,7 @@ from wai.tools.aws.insight import (
     AwsQuotasTool,
     AwsTopologyTool,
 )
+from wai.tools.aws.mutations import AwsWriteTool
 from wai.tools.aws.reads import (
     AwsCallTool,
     AwsCanITool,
@@ -40,6 +41,8 @@ def aws_tools(settings: Any = None) -> list[BaseTool]:
         AwsTopologyTool(),
         AwsQuotasTool(),
     ]
+    if settings is None or getattr(settings, "allow_writes", True):
+        tools.append(AwsWriteTool())
     if settings is None or getattr(settings, "allow_cost_explorer", True):
         # Not registered when switched off, so the model is never told about a
         # tool that would charge the user and then refuse.

@@ -97,6 +97,8 @@ def default_registry(
     tools: list[Tool] = [ReadFileTool(), ListDirTool(), GlobTool(), GrepTool()]
     if writes:
         tools += [WriteFileTool(), EditFileTool(), DeletePathTool()]
+    # Cloud tools are assembled below and filtered at the end, because their
+    # own switches decide registration first and `writes` is the floor.
 
     if kubernetes is None:
         from wai.cloud.base import integration
@@ -123,6 +125,13 @@ def default_registry(
 
         allowed = set(getattr(cloud, "cli_allowlist", ()) or ())
         tools += [t for t in cli_tools() if not allowed or t.binary in allowed]
+
+    if not writes:
+        # `writes=False` has to mean *no writes*, not "no file writes". It
+        # filtered only the filesystem tools, so a read-only registry still
+        # carried k8s_delete and aws_write --- and build_system_prompt then
+        # told the model it had read-only access while handing it a drain.
+        tools = [tool for tool in tools if tool.read_only]
     return ToolRegistry(tools)
 
 

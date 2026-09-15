@@ -11,11 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from wai.cloud.base import ProtectionRules
+import pytest
+
+from wai.cloud.base import ProtectionRules, Sensitivity
 from wai.cloud.redact import MARKER
 from wai.config.models import AwsSettings, CloudSettings
 from wai.tools import default_registry
-from wai.tools.approval import RecordingPolicy
+from wai.tools.approval import Decision, RecordingPolicy
 from wai.tools.aws import aws_tools
 from wai.tools.base import CloudContext, ToolContext
 from wai.workspace import Workspace
@@ -254,8 +256,12 @@ async def test_can_i_needs_actions() -> None:
 # --------------------------------------------------------------- the tool set
 
 
-def test_every_read_tool_is_read_only() -> None:
+def test_only_the_write_tool_prompts() -> None:
+    """Everything else must be a read. A tool that quietly changes something
+    without being marked would never reach the gate at all."""
     for entry in aws_tools():
+        if entry.name == "aws_write":
+            continue
         assert entry.read_only, f"{entry.name} is registered as a read but is not one"
 
 
@@ -504,3 +510,216 @@ async def test_quotas_come_back_as_bars() -> None:
     out = await tool("aws_quotas").run({"service": "ec2"}, context(provider))
     assert not out.is_error
     assert out.visual is not None and len(out.visual.bars) == 2
+
+
+# ------------------------------------------------------------------- writes
+
+# The Kubernetes gate promises "the server says this will work". AWS offers
+# that for 4.3% of operations, so these assert the prompt tells the truth about
+# which check actually ran.
+
+
+ALLOWED = {
+    "iam:SimulatePrincipalPolicy": {
+        "EvaluationResults": [{"EvalActionName": "x", "EvalDecision": "allowed"}]
+    }
+}
+DENIED = {
+    "iam:SimulatePrincipalPolicy": {
+        "EvaluationResults": [{"EvalActionName": "x", "EvalDecision": "implicitDeny"}]
+    }
+}
+
+
+def approving(decision: Decision = Decision.ALLOW) -> RecordingPolicy:
+    return RecordingPolicy(decision=decision)
+
+
+async def test_a_non_ec2_write_never_claims_a_dry_run_happened() -> None:
+    """The load-bearing honesty. AWS cannot preview an S3 delete, and a prompt
+    that implies otherwise buys false confidence at the moment of consent."""
+    provider = FakeProvider({**ALLOWED, "s3:DeleteObject": {}})
+    policy = approving()
+    out = await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {"Bucket": "b", "Key": "k"}},
+        context(provider, policy=policy),
+    )
+    assert not out.is_error, out.content
+    dry_run = policy.seen[0].dry_run
+    assert "not dry-run" in dry_run
+    assert "permission check: allowed" in dry_run
+    assert "succeeded" not in dry_run
+
+
+async def test_an_ec2_write_really_is_dry_run_first() -> None:
+    class DryRunProvider(FakeProvider):
+        async def call(self, service, operation, params=None, **kw):  # type: ignore[no-untyped-def]
+            self.calls.append((service, operation, dict(params or {}), str(kw.get("region", ""))))
+            if (params or {}).get("DryRun"):
+                raise RuntimeError("An error occurred (DryRunOperation) when calling StopInstances")
+            return {}
+
+    provider = DryRunProvider()
+    policy = approving()
+    out = await tool("aws_write").run(
+        {"service": "ec2", "operation": "StopInstances", "params": {"InstanceIds": ["i-1"]}},
+        context(provider, policy=policy),
+    )
+    assert not out.is_error, out.content
+    assert "dry run succeeded" in policy.seen[0].dry_run
+    assert "not dry-run" not in policy.seen[0].dry_run
+
+
+async def test_a_denied_permission_check_refuses_before_prompting() -> None:
+    """Asking about a decision that does not exist spends attention for
+    nothing, and teaches people the prompt is noise."""
+    provider = FakeProvider(DENIED)
+    policy = approving()
+    out = await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}},
+        context(provider, policy=policy),
+    )
+    assert out.is_error
+    assert policy.seen == []
+    assert "s3:DeleteObject" not in provider.real_calls
+
+
+async def test_a_permission_check_that_cannot_run_is_reported_not_treated_as_denial() -> None:
+    """Simulating needs iam:SimulatePrincipalPolicy, which plenty of roles that
+    can do the thing do not have."""
+    provider = FakeProvider({"s3:DeleteObject": {}}, fail="iam:SimulatePrincipalPolicy")
+    policy = approving()
+    out = await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}},
+        context(provider, policy=policy),
+    )
+    assert not out.is_error, out.content
+    assert "could not run" in policy.seen[0].dry_run
+
+
+@pytest.mark.parametrize(
+    ("service", "operation"),
+    [
+        ("s3", "DeleteObject"),
+        ("ec2", "CreateTags"),
+        ("iam", "AttachRolePolicy"),
+        ("rds", "DeleteDBInstance"),
+    ],
+)
+async def test_rejection_changes_nothing(service: str, operation: str) -> None:
+    """The load-bearing assertion: only the preflight may have run."""
+    provider = FakeProvider({**ALLOWED, f"{service}:{operation}": {}})
+    out = await tool("aws_write").run(
+        {"service": service, "operation": operation, "params": {}},
+        context(provider, policy=approving(Decision.DENY)),
+    )
+    assert out.is_error and out.denied
+    assert f"{service}:{operation}" not in provider.real_calls
+
+
+async def test_the_blast_radius_is_always_named() -> None:
+    provider = FakeProvider({**ALLOWED, "s3:DeleteObject": {}})
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}},
+        context(provider, policy=policy),
+    )
+    target = policy.seen[0].target
+    assert "123456789012" in target and "eu-west-1" in target
+
+
+async def test_a_privileged_write_demands_the_typed_challenge() -> None:
+    provider = FakeProvider({**ALLOWED, "iam:AttachRolePolicy": {}})
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "iam", "operation": "AttachRolePolicy", "params": {}},
+        context(provider, policy=policy),
+    )
+    request = policy.seen[0]
+    assert request.sensitivity is Sensitivity.PRIVILEGED
+    assert request.needs_challenge
+    assert not request.may_grant_always, "no standing grant on rewriting IAM"
+
+
+async def test_an_ordinary_change_does_not_demand_one() -> None:
+    """A challenge that fires on everything trains people to type through it."""
+    provider = FakeProvider({**ALLOWED, "ec2:CreateTags": {}})
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "ec2", "operation": "CreateTags", "params": {}},
+        context(provider, policy=policy),
+    )
+    assert policy.seen[0].sensitivity is Sensitivity.MUTATE
+    assert not policy.seen[0].needs_challenge
+
+
+async def test_a_protected_account_is_flagged_in_the_prompt() -> None:
+    provider = FakeProvider({**ALLOWED, "s3:DeleteObject": {}})
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}},
+        context(provider, policy=policy, accounts=("123456789012",)),
+    )
+    assert policy.seen[0].protected
+
+
+async def test_the_write_tool_refuses_reads() -> None:
+    out = await tool("aws_write").run(
+        {"service": "ec2", "operation": "DescribeInstances"}, context(FakeProvider())
+    )
+    assert out.is_error and "aws_call" in out.content
+
+
+async def test_the_prompt_carries_the_reason_or_says_there_was_none() -> None:
+    provider = FakeProvider({**ALLOWED, "s3:DeleteObject": {}})
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}},
+        context(provider, policy=policy),
+    )
+    assert "no reason given" in policy.seen[0].diff
+
+    policy = approving()
+    await tool("aws_write").run(
+        {"service": "s3", "operation": "DeleteObject", "params": {}, "reason": "stale export"},
+        context(provider, policy=policy),
+    )
+    assert "stale export" in policy.seen[0].diff
+
+
+# ------------------------------------------------------------ the switches
+
+
+@pytest.mark.parametrize(
+    ("settings", "service", "operation"),
+    [
+        (AwsSettings(allow_writes=False), "ec2", "CreateTags"),
+        (AwsSettings(allow_iam_writes=False), "iam", "AttachRolePolicy"),
+        (AwsSettings(allow_delete=False), "s3", "DeleteObject"),
+    ],
+)
+async def test_a_switch_refuses_at_the_gate(
+    settings: AwsSettings, service: str, operation: str
+) -> None:
+    """These cannot work by withholding a tool: the same aws_write tags a
+    volume and rewrites a trust policy."""
+    provider = FakeProvider({**ALLOWED, f"{service}:{operation}": {}})
+    policy = approving()
+    out = await tool("aws_write").run(
+        {"service": service, "operation": operation, "params": {}},
+        context(provider, policy=policy, settings=settings),
+    )
+    assert out.is_error and "[cloud.aws]" in out.content
+    assert policy.seen == []
+    assert f"{service}:{operation}" not in provider.real_calls
+
+
+def test_allow_writes_off_removes_the_tool_as_well() -> None:
+    names = {t.name for t in aws_tools(AwsSettings(allow_writes=False))}
+    assert "aws_write" not in names
+    assert "aws_call" in names, "reads are unaffected"
+
+
+def test_only_the_write_tool_is_mutating() -> None:
+    mutating = {t.name for t in aws_tools() if not t.read_only}
+    assert mutating == {"aws_write"}
