@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from wai.core.visuals import ResourceGraph
 from wai.render.canvas import Canvas, View
-from wai.render.layout import Metrics, Placed, forest, layout, walk
+from wai.render.layout import Metrics, Placed, caption_with_omissions, forest, layout, walk
 from wai.render.palette import Palette
 
 if TYPE_CHECKING:
@@ -106,10 +106,15 @@ def draw_graph(
         )
 
     hits: list[Hit] = []
+    omitted = 0
     for entry in placed:
         box = screen(entry)
         if box[2] < 0 or box[0] > canvas.width or box[3] < 0 or box[1] > canvas.height:
-            continue  # panned out of sight; no point drawing or hit-testing it
+            # Panned out of sight; no point drawing or hit-testing it. Counted
+            # rather than forgotten, because a caption that keeps counting a
+            # node nobody can see makes the picture look complete.
+            omitted += 1
+            continue
         node = entry.node
         kind_colour = palette.kind(node.kind)
         canvas.rect(box, fill=palette.surface, outline=kind_colour, radius=4 * scale, width=1)
@@ -166,6 +171,7 @@ def draw_graph(
             )
         )
 
-    if model.caption:
-        canvas.text((PAD, canvas.height - PAD - 10), model.caption, fill=palette.muted, size=9)
+    caption = caption_with_omissions(model.caption, omitted)
+    if caption:
+        canvas.text((PAD, canvas.height - PAD - 10), caption, fill=palette.muted, size=9)
     return tuple(hits)

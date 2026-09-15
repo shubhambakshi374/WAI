@@ -26,7 +26,15 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from wai.core.visuals import ResourceGraph
-from wai.render.layout import Metrics, Placed, cross_edges, forest, layout, walk
+from wai.render.layout import (
+    Metrics,
+    Placed,
+    caption_with_omissions,
+    cross_edges,
+    forest,
+    layout,
+    walk,
+)
 from wai.render.palette import Palette
 
 #: A node is four rows: border, kind, name, border. Three would fit only one
@@ -141,6 +149,10 @@ def draw_graph(
         bottom = top + int(CELLS.node_height) - 1
         if left < width and bottom < floor:
             boxes[entry.node.id] = (left, top, right, bottom)
+    # A map that quietly leaves nodes out claims a completeness it does not
+    # have --- the caption goes on counting them, so the reader has no way to
+    # know the picture is partial. Say so instead.
+    omitted = len(placed) - len(boxes)
 
     hits: list[CellHit] = []
     drawn_bottom = map_top
@@ -177,8 +189,9 @@ def draw_graph(
             line = f"  {head.kind}/{head.name} ─{relation}→ {tail.kind}/{tail.name}"
             grid.write(0, row + 1 + offset, _elide(line, width), fg=colour)
         row += 1 + min(len(relations), 6)
-    if model.caption:
-        grid.write(0, min(row, height - 1), _elide(model.caption, width), fg=palette.muted)
+    caption = caption_with_omissions(model.caption, omitted)
+    if caption:
+        grid.write(0, min(row, height - 1), _elide(caption, width), fg=palette.muted)
 
     grid.hits = tuple(hits)
     return grid

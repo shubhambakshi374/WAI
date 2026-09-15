@@ -10,6 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from wai.tools.azure.base import AzureMutatingTool, AzureTool
+from wai.tools.azure.insight import (
+    AzureCostTool,
+    AzureInventoryTool,
+    AzureQuotasTool,
+    AzureTopologyTool,
+)
 from wai.tools.azure.reads import (
     AzureCanITool,
     AzureExplainTool,
@@ -32,6 +38,10 @@ def azure_tools(settings: Any = None) -> list[BaseTool]:
         AzureGetTool(),
         AzureQueryTool(),
         AzureCanITool(),
+        AzureInventoryTool(),
+        AzureTopologyTool(),
+        AzureCostTool(),
+        AzureQuotasTool(),
     ]
     return tools
 

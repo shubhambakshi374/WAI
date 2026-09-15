@@ -210,3 +210,20 @@ def cross_edges(model: ResourceGraph) -> list[tuple[str, str, str]]:
     return [
         (edge.source, edge.relation, edge.target) for edge in model.edges if edge.relation != "owns"
     ]
+
+
+def caption_with_omissions(caption: str, omitted: int) -> str:
+    """Fold "and there is more" into a caption.
+
+    Shared because both back ends drop nodes that will not fit, and a map that
+    quietly leaves them out claims a completeness it does not have --- the
+    caption goes on counting them, so the reader has no way to know the picture
+    is partial.
+    """
+    if omitted <= 0:
+        return caption
+    # Leads rather than trails. Captions are elided to the panel width, and a
+    # note appended to an already-full one is cut off --- which is how this
+    # landed in the output looking exactly like the bug it fixes.
+    note = f"{omitted} more not shown — the map is taller than the space"
+    return f"{note} · {caption}" if caption else note

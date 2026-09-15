@@ -372,7 +372,7 @@ def test_target_for_feeds_the_protection_rules() -> None:
 
 # ------------------------------------------------------------------ the tools
 
-from typing import Any  # noqa: E402
+from typing import Any, ClassVar  # noqa: E402
 
 from wai.config.models import AzureSettings, CloudSettings  # noqa: E402
 from wai.tools import default_registry  # noqa: E402
@@ -444,10 +444,19 @@ class FakeAzure:
             ],
         }
 
+    #: Types the provider manifest lists. Anything else has to raise rather
+    #: than invent a version --- a call pinned to a wrong one fails in a way
+    #: that looks like the resource is gone.
+    KNOWN_TYPES: ClassVar[dict[str, str]] = {
+        "virtualmachines": "2024-03-01",
+        "locations/usages": "2023-07-01",
+    }
+
     async def api_version_for(self, namespace: str, resource_type: str) -> str:
-        if resource_type.casefold() != "virtualmachines":
+        found = self.KNOWN_TYPES.get(resource_type.casefold())
+        if found is None:
             raise az.ArmError(404, "UnknownResourceType", f"no such type {resource_type}")
-        return "2024-03-01"
+        return found
 
     async def call(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
         self.requests.append((method.upper(), path))
@@ -632,3 +641,307 @@ def test_the_registry_registers_azure_when_it_is_asked_to(tmp_path: Any) -> None
 def test_the_registry_leaves_azure_out_when_it_is_not(tmp_path: Any) -> None:
     registry = default_registry(kubernetes=False, aws=False, azure=False, cloud=CloudSettings())
     assert not any(name.startswith("azure_") for name in registry.names)
+
+
+# ------------------------------------------------------------ curated views
+
+VNET_ID = (
+    "/subscriptions/sub-0000/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet"
+)
+SUBNET_ID = f"{VNET_ID}/subnets/web"
+NIC_ID = (
+    "/subscriptions/sub-0000/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/nic1"
+)
+PIP_ID = (
+    "/subscriptions/sub-0000/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/pip1"
+)
+NSG_ID = "/subscriptions/sub-0000/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/nsg"
+VM_ID = "/subscriptions/sub-0000/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/web1"
+
+TOPOLOGY_ROWS = [
+    {
+        "id": VNET_ID,
+        "name": "vnet",
+        "type": "microsoft.network/virtualNetworks",
+        "location": "westeurope",
+        "resourceGroup": "rg",
+        "properties": {
+            "addressSpace": {"addressPrefixes": ["10.0.0.0/16"]},
+            "subnets": [
+                {"id": SUBNET_ID, "name": "web", "properties": {"addressPrefix": "10.0.1.0/24"}}
+            ],
+        },
+    },
+    {
+        "id": NIC_ID,
+        "name": "nic1",
+        "type": "microsoft.network/networkInterfaces",
+        "location": "westeurope",
+        "resourceGroup": "rg",
+        "properties": {
+            "ipConfigurations": [
+                {
+                    "properties": {
+                        "subnet": {"id": SUBNET_ID},
+                        "publicIPAddress": {"id": PIP_ID},
+                    }
+                }
+            ]
+        },
+    },
+    {
+        "id": PIP_ID,
+        "name": "pip1",
+        "type": "microsoft.network/publicIPAddresses",
+        "location": "westeurope",
+        "resourceGroup": "rg",
+        "properties": {"ipAddress": "20.1.2.3"},
+    },
+    {
+        "id": NSG_ID,
+        "name": "nsg",
+        "type": "microsoft.network/networkSecurityGroups",
+        "location": "westeurope",
+        "resourceGroup": "rg",
+        "properties": {"subnets": [{"id": SUBNET_ID}], "networkInterfaces": []},
+    },
+    {
+        "id": VM_ID,
+        "name": "web1",
+        "type": "microsoft.compute/virtualMachines",
+        "location": "westeurope",
+        "resourceGroup": "rg",
+        "properties": {
+            "hardwareProfile": {"vmSize": "Standard_D2s_v3"},
+            "networkProfile": {"networkInterfaces": [{"id": NIC_ID}]},
+        },
+    },
+]
+
+
+async def test_inventory_is_one_query_not_a_walk(tmp_path: Any) -> None:
+    provider = FakeAzure(
+        {
+            "graph": {
+                "data": [
+                    {
+                        "name": "web1",
+                        "type": "microsoft.compute/virtualMachines",
+                        "resourceGroup": "rg",
+                        "location": "westeurope",
+                    }
+                ]
+            }
+        }
+    )
+    outcome = await tool("azure_inventory").run({}, context(tmp_path, provider))
+    assert "web1" in outcome.content
+    assert "virtualMachines" in outcome.content
+    assert len(provider.graph_queries) == 1
+    assert provider.requests == []
+
+
+async def test_inventory_escapes_a_group_name_into_kql(tmp_path: Any) -> None:
+    """A quote that terminated the literal early would let a model-supplied
+    name change what the query means."""
+    provider = FakeAzure()
+    await tool("azure_inventory").run({"group": "rg' or true or '"}, context(tmp_path, provider))
+    assert "\\'" in provider.graph_queries[0]
+
+
+async def test_topology_builds_the_network_hierarchy(tmp_path: Any) -> None:
+    provider = FakeAzure({"graph": {"data": TOPOLOGY_ROWS}})
+    outcome = await tool("azure_topology").run({}, context(tmp_path, provider))
+    graph = outcome.visual
+    assert graph is not None
+
+    kinds = {node.kind for node in graph.nodes}
+    assert kinds == {
+        "VirtualNetwork",
+        "Subnet",
+        "NetworkInterface",
+        "PublicIP",
+        "NetworkSecurityGroup",
+        "VirtualMachine",
+    }
+    relations = {(e.relation, e.source.split("/")[0], e.target.split("/")[0]) for e in graph.edges}
+    # Containment: vnet owns subnet, subnet owns nic, nic owns vm.
+    assert ("owns", "VirtualNetwork", "Subnet") in relations
+    assert ("owns", "Subnet", "NetworkInterface") in relations
+    assert ("owns", "NetworkInterface", "VirtualMachine") in relations
+    # The two relations that make it a graph rather than a tree.
+    assert ("secures", "NetworkSecurityGroup", "Subnet") in relations
+    assert ("exposes", "PublicIP", "NetworkInterface") in relations
+
+
+async def test_topology_nodes_carry_a_reader_so_a_click_can_open_them(tmp_path: Any) -> None:
+    """The drill-down seam added for AWS, used unchanged. A node names the
+    tool that reads it rather than the front end guessing from the kind ---
+    guessing wrong would send an ARM id to a Kubernetes tool."""
+    provider = FakeAzure({"graph": {"data": TOPOLOGY_ROWS}})
+    outcome = await tool("azure_topology").run({}, context(tmp_path, provider))
+    assert outcome.visual is not None
+    assert {node.reader for node in outcome.visual.nodes} == {"azure_get"}
+    for node in outcome.visual.nodes:
+        assert node.id.count("/") == 2, node.id
+
+
+async def test_topology_drops_an_unattached_security_group(tmp_path: Any) -> None:
+    """Noise on a topology map, and the AWS version drops them for the same
+    reason."""
+    rows = [row for row in TOPOLOGY_ROWS if row["id"] != NSG_ID]
+    rows.append({**TOPOLOGY_ROWS[3], "properties": {"subnets": [], "networkInterfaces": []}})
+    provider = FakeAzure({"graph": {"data": rows}})
+    outcome = await tool("azure_topology").run({}, context(tmp_path, provider))
+    assert outcome.visual is not None
+    assert not any(node.kind == "NetworkSecurityGroup" for node in outcome.visual.nodes)
+
+
+COST_PAYLOAD = {
+    "properties": {
+        "columns": [
+            {"name": "Cost"},
+            {"name": "UsageDate"},
+            {"name": "ServiceName"},
+            {"name": "Currency"},
+        ],
+        "rows": [
+            [12.5, 20260101, "Virtual Machines", "EUR"],
+            [4.0, 20260101, "Storage", "EUR"],
+            [13.5, 20260102, "Virtual Machines", "EUR"],
+        ],
+    }
+}
+
+
+async def test_cost_charts_each_service_on_shared_axes(tmp_path: Any) -> None:
+    provider = FakeAzure(
+        {"/subscriptions/sub-0000/providers/Microsoft.CostManagement/query": COST_PAYLOAD}
+    )
+    outcome = await tool("azure_cost").run({}, context(tmp_path, provider))
+    chart = outcome.visual
+    assert chart is not None
+    assert [s.label for s in chart.series] == ["Virtual Machines", "Storage"]
+    assert chart.series[0].points == [12.5, 13.5]
+    assert chart.series[0].timed  # a time axis, not just a shape
+    assert "EUR" in outcome.summary
+
+
+async def test_cost_reads_columns_by_name_not_position(tmp_path: Any) -> None:
+    """Cost Management's column order is not contractual, and reading by
+    position would silently chart the date as the amount."""
+    shuffled = {
+        "properties": {
+            "columns": [
+                {"name": "ServiceName"},
+                {"name": "Currency"},
+                {"name": "UsageDate"},
+                {"name": "Cost"},
+            ],
+            "rows": [["Virtual Machines", "EUR", 20260101, 12.5]],
+        }
+    }
+    provider = FakeAzure(
+        {"/subscriptions/sub-0000/providers/Microsoft.CostManagement/query": shuffled}
+    )
+    outcome = await tool("azure_cost").run({}, context(tmp_path, provider))
+    assert outcome.visual is not None
+    assert outcome.visual.series[0].points == [12.5]
+
+
+async def test_cost_says_so_when_there_is_nothing(tmp_path: Any) -> None:
+    provider = FakeAzure(
+        {"/subscriptions/sub-0000/providers/Microsoft.CostManagement/query": {"properties": {}}}
+    )
+    outcome = await tool("azure_cost").run({}, context(tmp_path, provider))
+    assert "no cost data" in outcome.content
+
+
+async def test_quotas_plot_real_usage_against_the_ceiling(tmp_path: Any) -> None:
+    """The AWS version could only plot the quota and had to say so in its
+    caption. Azure reports what is consumed, so Bar.limit means what it was
+    built to mean."""
+    usages = {
+        "value": [
+            {
+                "name": {"localizedValue": "Total Regional vCPUs"},
+                "currentValue": 90,
+                "limit": 100,
+                "unit": "Count",
+            },
+            {
+                "name": {"localizedValue": "Standard DSv3 Family vCPUs"},
+                "currentValue": 2,
+                "limit": 50,
+                "unit": "Count",
+            },
+            {
+                "name": {"localizedValue": "Unused Family"},
+                "currentValue": 0,
+                "limit": 10,
+                "unit": "Count",
+            },
+        ]
+    }
+    path = "/subscriptions/sub-0000/providers/Microsoft.Compute/locations/westeurope/usages"
+    provider = FakeAzure({path: usages})
+    outcome = await tool("azure_quotas").run({"region": "westeurope"}, context(tmp_path, provider))
+    chart = outcome.visual
+    assert chart is not None
+    assert [bar.value for bar in chart.bars] == [90.0, 2.0]  # the unused one is dropped
+    assert chart.bars[0].limit == 100.0  # tightest first
+    assert "90%" in chart.caption
+
+
+async def test_every_curated_view_is_read_only() -> None:
+    assert all(t.read_only for t in azure_tools())
+    assert {t.name for t in azure_tools()} >= {
+        "azure_inventory",
+        "azure_topology",
+        "azure_cost",
+        "azure_quotas",
+    }
+
+
+def test_the_drill_down_knows_how_to_read_an_azure_node() -> None:
+    """detail.py dispatches on the node's own reader. A node whose kind is not
+    mapped still opens --- it falls back to a generic resource read rather than
+    to a tool for another cloud."""
+    from wai.tui.screens.detail import AZURE_READERS, READERS, NodeDetail
+
+    assert READERS["azure_get"] == "Azure"
+    screen = NodeDetail("VirtualMachine/rg/web1", "web1", reader="azure_get")
+    assert screen._args(("VirtualMachine", "rg", "web1")) == {
+        "namespace": "Microsoft.Compute",
+        "type": "virtualMachines",
+        "group": "rg",
+    }
+    assert screen._args(("Nonesuch", "rg", "x"))["namespace"] == "Microsoft.Resources"
+    assert set(AZURE_READERS) >= {"VirtualMachine", "Subnet", "NetworkSecurityGroup"}
+
+
+async def test_a_map_that_does_not_fit_says_so(tmp_path: Any) -> None:
+    """Found by looking at the rendered output rather than by a test.
+
+    The VNet → subnet → NIC → VM chain is four deep, and in 26 rows the last
+    box is dropped while the caption goes on counting it. A map that quietly
+    leaves nodes out claims a completeness it does not have.
+    """
+    from wai.render.cells import draw_graph
+    from wai.render.palette import DARK
+
+    provider = FakeAzure({"graph": {"data": TOPOLOGY_ROWS}})
+    outcome = await tool("azure_topology").run({}, context(tmp_path, provider))
+    assert outcome.visual is not None
+
+    def render(height: int) -> str:
+        grid = draw_graph(outcome.visual, width=96, height=height, palette=DARK)
+        return "\n".join("".join(cell.char for cell in row) for row in grid.rows)
+
+    cramped = render(26)
+    assert "web1" not in cramped  # the machine did not fit
+    assert "not shown" in cramped  # and the map admits it
+
+    roomy = render(40)
+    assert "web1" in roomy
+    assert "not shown" not in roomy

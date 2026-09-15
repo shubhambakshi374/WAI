@@ -26,6 +26,7 @@ from textual.widgets import Label, Static
 READERS: dict[str, str] = {
     "k8s_get": "Kubernetes",
     "aws_call": "AWS",
+    "azure_get": "Azure",
 }
 
 #: Which read answers for an AWS node kind. AWS has no single "get this ARN"
@@ -40,6 +41,19 @@ AWS_READERS: dict[str, tuple[str, str]] = {
     "DBInstance": ("rds", "DescribeDBInstances"),
     "Function": ("lambda", "ListFunctions"),
     "Bucket": ("s3", "ListBuckets"),
+}
+
+
+#: Which namespace and type answer for an Azure node kind. A subnet is not a
+#: resource of its own in ARM --- it lives on its virtual network --- so the
+#: parent is what gets read.
+AZURE_READERS: dict[str, tuple[str, str]] = {
+    "VirtualMachine": ("Microsoft.Compute", "virtualMachines"),
+    "VirtualNetwork": ("Microsoft.Network", "virtualNetworks"),
+    "Subnet": ("Microsoft.Network", "virtualNetworks"),
+    "NetworkInterface": ("Microsoft.Network", "networkInterfaces"),
+    "NetworkSecurityGroup": ("Microsoft.Network", "networkSecurityGroups"),
+    "PublicIP": ("Microsoft.Network", "publicIPAddresses"),
 }
 
 
@@ -101,10 +115,16 @@ class NodeDetail(ModalScreen[None]):
         body.update(outcome.content or "(empty)")
 
     def _args(self, parts: tuple[str, str, str]) -> dict[str, str]:
-        """The identity is Kind/scope/name in both clouds; only the parameter
-        names differ, and the scope means namespace in one and region in the
-        other."""
+        """The identity is Kind/scope/name in all three clouds; only the
+        parameter names differ, and the scope means namespace in Kubernetes,
+        region in AWS and resource group in Azure."""
         kind, scope, name = parts
+        if self.reader == "azure_get":
+            namespace, resource_type = AZURE_READERS.get(kind, ("Microsoft.Resources", "resources"))
+            args = {"namespace": namespace, "type": resource_type}
+            if scope:
+                args["group"] = scope
+            return args
         if self.reader == "aws_call":
             service, operation = AWS_READERS.get(kind, ("ec2", "DescribeInstances"))
             args = {"service": service, "operation": operation}
