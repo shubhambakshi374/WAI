@@ -322,6 +322,16 @@ def build_cloud_context(config: Config) -> CloudContext:
 
     aws_provider = AwsProvider(region=settings.default_region)
 
+    azure_provider = None
+    azure_entry = integration("azure")
+    if azure_entry and azure_entry.available:
+        from wai.cloud.azure import AzureProvider
+
+        azure_provider = AzureProvider(
+            subscription=settings.azure_subscription or "",
+            max_results=settings.azure.max_results,
+        )
+
     forwards = None
     if provider is not None and settings.k8s.allow_port_forward:
         from wai.tools.k8s.streams import PortForwards
@@ -350,6 +360,9 @@ def build_cloud_context(config: Config) -> CloudContext:
         aws=aws_provider,
         aws_region=settings.default_region or "",
         aws_settings=settings.aws,
+        azure=azure_provider,
+        azure_subscription=settings.azure_subscription or "",
+        azure_settings=settings.azure,
         exec_timeout=settings.k8s.exec_timeout,
         allow_rbac_writes=settings.k8s.allow_rbac_writes,
         cli_allowlist=tuple(settings.cli_allowlist),

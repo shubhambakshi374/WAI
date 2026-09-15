@@ -45,6 +45,14 @@ class CloudContext:
     aws_settings: Any = None
     """A ``wai.config.models.AwsSettings``. Checked at the gate for the classes
     that cannot be enforced by withholding a tool."""
+    azure: Any = None
+    """A ``wai.cloud.azure.AzureProvider``; typed loosely so ``tools.base`` does
+    not import an optional SDK path at module scope."""
+    azure_subscription: str = ""
+    azure_settings: Any = None
+    """A ``wai.config.models.AzureSettings``. Checked at the gate, for the same
+    reason its AWS namesake is: the same azure_write sets a tag and a role
+    assignment."""
     exec_timeout: int = 60
     cli_allowlist: tuple[str, ...] = ()
     """Binaries the CLI fallback may run. Registration already filters on this,

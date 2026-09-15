@@ -123,6 +123,35 @@ class AwsSettings(BaseModel):
     thousand objects, and the model pays for every one of them."""
 
 
+class AzureSettings(BaseModel):
+    """Which classes of Azure capability this machine offers.
+
+    Like the AWS switches and unlike the Kubernetes ones, most of these cannot
+    work by withholding a tool: the same ``azure_write`` sets a tag and a role
+    assignment. They are checked at the approval gate instead.
+
+    There is no ``allow_cost_explorer`` here on purpose. AWS needed one because
+    Cost Explorer bills about a cent a request; Azure's Cost Management query
+    API is free, so the switch would protect against nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_writes: bool = True
+    """Any mutating call at all."""
+    allow_rbac_writes: bool = True
+    """Writes to Microsoft.Authorization, ManagedIdentity, AAD and Key Vault ---
+    role assignments, policy, and resource locks. Removing a lock is how you get
+    around a lock, so it belongs in the same class as what it protects."""
+    allow_delete: bool = True
+    """The irreversible verb."""
+    allow_cli: bool = True
+    """The `az` fallback, when the native azure_* tools cannot express it."""
+    max_results: int = 500
+    """Rows returned from one call. ARM will page through a whole subscription
+    given the chance, and the model pays for every row."""
+
+
 class CloudSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -141,6 +170,10 @@ class CloudSettings(BaseModel):
     current-context to your kubeconfig, like `kubectl config use-context` ---
     which retargets every other terminal you have open, so it is opt-in."""
     default_region: str | None = None
+    azure_subscription: str | None = None
+    """The Azure subscription WAI acts in. One credential commonly sees many,
+    and every tool acts in exactly one --- so that the blast radius named in a
+    prompt is the one that is actually touched."""
     dry_run_first: bool = True
     cli_fallback: bool = True
     cli_allowlist: list[str] = Field(
@@ -149,6 +182,7 @@ class CloudSettings(BaseModel):
     protected: ProtectedSettings = Field(default_factory=ProtectedSettings)
     k8s: K8sSettings = Field(default_factory=K8sSettings)
     aws: AwsSettings = Field(default_factory=AwsSettings)
+    azure: AzureSettings = Field(default_factory=AzureSettings)
 
 
 class UISettings(BaseModel):
