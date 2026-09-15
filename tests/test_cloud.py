@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from wai.cloud import aws as aws_cloud
-from wai.cloud import kube as kube_cloud
-from wai.cloud.base import (
+from altus.cloud import aws as aws_cloud
+from altus.cloud import kube as kube_cloud
+from altus.cloud.base import (
     INTEGRATIONS,
     CloudTarget,
     ProtectionMode,
@@ -21,7 +21,7 @@ from wai.cloud.base import (
     Sensitivity,
     integration,
 )
-from wai.cloud.redact import MARKER, redact, redact_text
+from altus.cloud.redact import MARKER, redact, redact_text
 
 # ------------------------------------------------------------- classification
 
@@ -344,7 +344,7 @@ def test_protection_default_is_confirm_not_deny() -> None:
 
 
 def test_config_defaults_protect_production() -> None:
-    from wai.config import Config
+    from altus.config import Config
 
     protected = Config().cloud.protected
     rules = ProtectionRules.build(protected.patterns, protected.accounts, protected.mode)
@@ -451,7 +451,7 @@ def test_integrations_report_availability_and_install_hints() -> None:
 
 
 def test_missing_integration_is_reported_not_crashed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from wai.cloud.base import Integration
+    from altus.cloud.base import Integration
 
     absent = Integration("nope", "nope", ("definitely_not_a_module",), "Nothing")
     assert absent.available is False
@@ -462,7 +462,7 @@ def test_auth_status_never_needs_the_network(monkeypatch: pytest.MonkeyPatch) ->
     """Opening the auth panel must not cost four cloud round trips."""
     import socket
 
-    from wai.cloud.auth import all_status
+    from altus.cloud.auth import all_status
 
     def blocked(*args: object, **kwargs: object) -> None:
         raise AssertionError("status() made a network call")
@@ -507,7 +507,7 @@ def test_global_scope_writes_only_current_context(tmp_path: Path, monkeypatch) -
     """Opt-in write. Everything else in the file must survive untouched."""
     import yaml
 
-    from wai.cloud.kube import set_current_context
+    from altus.cloud.kube import set_current_context
 
     path = tmp_path / "config"
     original = (
@@ -537,7 +537,7 @@ def test_global_scope_writes_only_current_context(tmp_path: Path, monkeypatch) -
 
 
 def test_global_scope_rejects_an_unknown_context(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from wai.cloud.kube import set_current_context
+    from altus.cloud.kube import set_current_context
 
     path = tmp_path / "config"
     path.write_text(
@@ -552,9 +552,9 @@ def test_global_scope_rejects_an_unknown_context(tmp_path: Path, monkeypatch) ->
 
 
 def test_default_scope_is_wai_only() -> None:
-    from wai.config import Config
+    from altus.config import Config
 
-    assert Config().cloud.kube_context_scope == "wai"
+    assert Config().cloud.kube_context_scope == "altus"
 
 
 @pytest.mark.parametrize(

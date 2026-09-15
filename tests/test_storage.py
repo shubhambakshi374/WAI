@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from wai.core.session import Session
-from wai.core.types import Message, ReasoningBlock, Role, Usage
-from wai.storage.sessions import SessionStore
+from altus.core.session import Session
+from altus.core.types import Message, ReasoningBlock, Role, Usage
+from altus.storage.sessions import SessionStore
 
 
 @pytest.fixture

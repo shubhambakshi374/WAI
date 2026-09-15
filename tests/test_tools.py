@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from wai.tools import ToolContext, default_registry
-from wai.tools.fs import GrepTool
-from wai.workspace import Workspace
+from altus.tools import ToolContext, default_registry
+from altus.tools.fs import GrepTool
+from altus.workspace import Workspace
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def ctx(tree: Path) -> ToolContext:
 @pytest.fixture
 def registry():  # type: ignore[no-untyped-def]
     # Filesystem tools only: the cloud sets have their own test modules.
-    return default_registry(kubernetes=False, aws=False)
+    return default_registry(kubernetes=False, aws=False, azure=False)
 
 
 async def run(registry, name, args, ctx):  # type: ignore[no-untyped-def]
@@ -296,9 +296,9 @@ def test_registry_splits_read_only_from_mutating(registry) -> None:  # type: ign
 
 
 def test_registry_can_omit_the_write_tools() -> None:
-    from wai.tools import default_registry as make
+    from altus.tools import default_registry as make
 
-    assert make(writes=False, kubernetes=False, aws=False).names == [
+    assert make(writes=False, kubernetes=False, aws=False, azure=False).names == [
         "glob",
         "grep",
         "list_dir",
@@ -307,10 +307,10 @@ def test_registry_can_omit_the_write_tools() -> None:
 
 
 def test_kubernetes_tools_register_only_when_the_sdk_is_present() -> None:
-    from wai.tools import default_registry as make
+    from altus.tools import default_registry as make
 
-    with_k8s = make(kubernetes=True, aws=False).names
-    without = make(kubernetes=False, aws=False).names
+    with_k8s = make(kubernetes=True, aws=False, azure=False).names
+    without = make(kubernetes=False, aws=False, azure=False).names
     assert any(n.startswith("k8s_") for n in with_k8s)
     assert not any(n.startswith("k8s_") for n in without)
 
@@ -318,10 +318,12 @@ def test_kubernetes_tools_register_only_when_the_sdk_is_present() -> None:
 def test_aws_tools_register_without_an_extra() -> None:
     """boto3 is a core dependency because bedrock needs it, so unlike the
     Kubernetes set there is nothing to install."""
-    from wai.tools import default_registry as make
+    from altus.tools import default_registry as make
 
     assert any(n.startswith("aws_") for n in make(kubernetes=False, aws=True).names)
-    assert not any(n.startswith("aws_") for n in make(kubernetes=False, aws=False).names)
+    assert not any(
+        n.startswith("aws_") for n in make(kubernetes=False, aws=False, azure=False).names
+    )
 
 
 def test_tool_defs_are_stable_and_schema_shaped(registry) -> None:  # type: ignore[no-untyped-def]
@@ -344,7 +346,7 @@ async def test_tool_exceptions_become_error_outcomes(registry, ctx, monkeypatch)
     async def boom(self, args, c):  # type: ignore[no-untyped-def]
         raise OSError("disk on fire")
 
-    monkeypatch.setattr("wai.tools.fs.ReadFileTool.run", boom)
+    monkeypatch.setattr("altus.tools.fs.ReadFileTool.run", boom)
     out = await run(registry, "read_file", {"path": "src/main.py"}, ctx)
     assert out.is_error and "disk on fire" in out.content
 
@@ -358,7 +360,7 @@ def test_writes_off_means_no_writes_anywhere() -> None:
     """It used to filter only the filesystem tools, so a read-only registry
     still carried k8s_delete and aws_write --- and build_system_prompt then
     told the model it had read-only access while handing it a drain."""
-    from wai.tools import default_registry as make
+    from altus.tools import default_registry as make
 
     registry = make(writes=False, kubernetes=True, aws=True)
     mutating = [name for name in registry.names if not registry.is_read_only(name)]

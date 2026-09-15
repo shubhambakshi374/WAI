@@ -9,8 +9,8 @@ Requires Python 3.14+, or [uv](https://docs.astral.sh/uv/), which fetches an
 interpreter for you.
 
 ```sh
-git clone https://github.com/shubhambakshi374/WAI.git
-cd WAI
+git clone https://github.com/shubhambakshi374/altus.git
+cd altus
 uv sync --all-groups
 ```
 
@@ -34,14 +34,14 @@ run; opt in with `-m live` only if you mean it.
   written is not worth its maintenance.
 - **Layering.** `core`, `providers`, `config`, `storage`, `tools` and `cloud`
   must stay importable without Textual — `tests/test_layering.py` enforces it.
-  If that test fails, move the code into `wai.tui` rather than deleting the test.
+  If that test fails, move the code into `altus.tui` rather than deleting the test.
 - **Anything reaching a cluster or a cloud account is gated.** Reads may run
   freely; mutations dry-run first and then ask. Operations that run code, mint
   credentials, rewrite authorization or take capacity out of service are
-  `PRIVILEGED` and demand a typed confirmation — see `wai/cloud/kube.py`.
+  `PRIVILEGED` and demand a typed confirmation — see `altus/cloud/kube.py`.
 - **Tool output is redacted before it reaches a model provider.** Results are
   transmitted verbatim to whichever LLM is configured, so a gap in
-  `wai/cloud/redact.py` is a credential leaving someone's machine.
+  `altus/cloud/redact.py` is a credential leaving someone's machine.
 
 ## Commit messages
 

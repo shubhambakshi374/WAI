@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 from textual.content import Content
 
-import wai
+import altus
 
-TUI = Path(wai.__file__).parent / "tui"
+TUI = Path(altus.__file__).parent / "tui"
 
 #: Widgets whose first positional argument is parsed as markup unless told
 #: otherwise. `notify` takes the same keyword.
@@ -55,7 +55,7 @@ def _is_neutralised(node: ast.expr) -> bool:
     """Wrapped in something that cannot be read as markup.
 
     ``Content``/``Text`` carry no markup by construction; ``literal`` escapes
-    the one character that starts a tag. See ``wai/tui/markup.py``.
+    the one character that starts a tag. See ``altus/tui/markup.py``.
     """
     return (
         isinstance(node, ast.Call)
@@ -152,7 +152,7 @@ async def test_the_tool_call_from_issue_1_renders() -> None:
     mid-bracket by summarize_args."""
     from textual.app import App, ComposeResult
 
-    from wai.tui.widgets.tool_call import ToolCallWidget
+    from altus.tui.widgets.tool_call import ToolCallWidget
 
     args = {"args": ["get", "pods", "-A", "--field-selector=status.phase=Running"]}
 
@@ -170,8 +170,8 @@ async def test_the_tool_call_from_issue_1_renders() -> None:
 async def test_an_approval_prompt_carrying_model_supplied_brackets_renders() -> None:
     """`path` for the CLI tools is the model's own argv. A crash here takes out
     the gate itself, so this one matters more than the reported one."""
-    from wai.tools.approval import ApprovalRequest
-    from wai.tui.widgets.approval import ApprovalModal
+    from altus.tools.approval import ApprovalRequest
+    from altus.tui.widgets.approval import ApprovalModal
 
     request = ApprovalRequest(
         tool="k8s_kubectl",
@@ -201,8 +201,8 @@ async def test_an_events_table_with_bracketed_messages_renders() -> None:
     routinely contain brackets."""
     from textual.app import App, ComposeResult
 
-    from wai.core.visuals import Table
-    from wai.tui.widgets.visuals import build_view
+    from altus.core.visuals import Table
+    from altus.tui.widgets.visuals import build_view
 
     model = Table(
         title="Events [/]",

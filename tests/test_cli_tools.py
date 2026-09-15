@@ -13,13 +13,13 @@ from typing import Any
 
 import pytest
 
-from wai.cloud.base import Sensitivity
-from wai.config.models import CloudSettings, K8sSettings
-from wai.tools import default_registry
-from wai.tools.approval import Decision, RecordingPolicy
-from wai.tools.base import CloudContext, ToolContext
-from wai.tools.cli import HelmTool, KubectlTool, cli_tools
-from wai.workspace import Workspace
+from altus.cloud.base import Sensitivity
+from altus.config.models import CloudSettings, K8sSettings
+from altus.tools import default_registry
+from altus.tools.approval import Decision, RecordingPolicy
+from altus.tools.base import CloudContext, ToolContext
+from altus.tools.cli import HelmTool, KubectlTool, cli_tools
+from altus.workspace import Workspace
 
 
 def context(tmp_path: Path, policy: Any = None, **cloud: Any) -> ToolContext:
@@ -174,12 +174,12 @@ async def test_the_prompt_carries_the_reason_or_says_there_was_none(
 async def test_the_model_cannot_retarget_the_command(
     tmp_path: Path, on_path: Path, flag: str
 ) -> None:
-    """WAI sets these from session state. A model-supplied one would send the
+    """Altus sets these from session state. A model-supplied one would send the
     command somewhere the approval prompt did not name."""
     policy = RecordingPolicy(Decision.ALLOW)
     out = await KubectlTool().run({"args": ["get", "pods", flag]}, context(tmp_path, policy))
     assert out.is_error
-    assert "set by WAI" in out.content
+    assert "set by Altus" in out.content
     assert policy.seen == [], "refused before anyone is asked"
 
 
@@ -246,7 +246,7 @@ def test_no_cli_tool_is_read_only() -> None:
 
 
 def test_disabled_classes_are_reportable() -> None:
-    from wai.tools.k8s import disabled_classes
+    from altus.tools.k8s import disabled_classes
 
     assert disabled_classes(K8sSettings()) == []
     off = disabled_classes(K8sSettings(allow_exec=False, allow_cli=False))
@@ -260,7 +260,7 @@ def test_disabled_classes_are_reportable() -> None:
 async def test_rbac_writes_off_refuses_at_the_gate(tmp_path: Path) -> None:
     """This one cannot be enforced by withholding a tool: the same k8s_apply
     writes a ConfigMap and a ClusterRoleBinding."""
-    from wai.tools.k8s import k8s_tools
+    from altus.tools.k8s import k8s_tools
 
     apply_tool = next(t for t in k8s_tools() if t.name == "k8s_apply")
     policy = RecordingPolicy(Decision.ALLOW)
@@ -285,7 +285,7 @@ async def test_rbac_writes_off_refuses_at_the_gate(tmp_path: Path) -> None:
 
 
 async def test_rbac_writes_off_leaves_ordinary_objects_alone(tmp_path: Path) -> None:
-    from wai.tools.k8s import k8s_tools
+    from altus.tools.k8s import k8s_tools
 
     apply_tool = next(t for t in k8s_tools() if t.name == "k8s_apply")
     ctx = ToolContext(
@@ -307,7 +307,7 @@ async def test_rbac_writes_off_leaves_ordinary_objects_alone(tmp_path: Path) -> 
 
 
 async def test_minting_a_token_counts_as_an_rbac_write(tmp_path: Path) -> None:
-    from wai.tools.k8s import k8s_tools
+    from altus.tools.k8s import k8s_tools
 
     create = next(t for t in k8s_tools() if t.name == "k8s_create")
     ctx = ToolContext(

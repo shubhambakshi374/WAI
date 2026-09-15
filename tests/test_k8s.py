@@ -11,15 +11,15 @@ from typing import Any
 
 import pytest
 
-from wai.cloud import k8s as k8s_api
-from wai.cloud.base import ProtectionRules, Sensitivity
-from wai.cloud.k8s import MetricsUnavailable, build_graph, parse_cpu, parse_memory
-from wai.cloud.redact import MARKER
-from wai.core.visuals import Bars, ResourceGraph, Table, VisualGroup
-from wai.tools.approval import Decision
-from wai.tools.base import CloudContext, ToolContext
-from wai.tools.k8s import k8s_tools
-from wai.workspace import Workspace
+from altus.cloud import k8s as k8s_api
+from altus.cloud.base import ProtectionRules, Sensitivity
+from altus.cloud.k8s import MetricsUnavailable, build_graph, parse_cpu, parse_memory
+from altus.cloud.redact import MARKER
+from altus.core.visuals import Bars, ResourceGraph, Table, VisualGroup
+from altus.tools.approval import Decision
+from altus.tools.base import CloudContext, ToolContext
+from altus.tools.k8s import k8s_tools
+from altus.workspace import Workspace
 
 # ------------------------------------------------------------------- fixtures
 
@@ -498,7 +498,7 @@ async def test_a_forbidden_kind_does_not_sink_the_whole_topology() -> None:
 
 
 async def test_all_visuals_render_headlessly(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """to_text() is what `wai chat --once` and the Phase 3 engine will use."""
+    """to_text() is what `altus chat --once` and the Phase 3 engine will use."""
     metrics = [
         {"metadata": {"name": "p"}, "containers": [{"usage": {"cpu": "1m", "memory": "1Mi"}}]}
     ]
@@ -517,7 +517,7 @@ async def test_all_visuals_render_headlessly(tmp_path) -> None:  # type: ignore[
 
 async def test_visual_never_reaches_the_model(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """The whole economy of this design: charts cost no context."""
-    from wai.core.types import ToolResultBlock
+    from altus.core.types import ToolResultBlock
 
     out = await tool("k8s_topology").run({}, context_for(FakeClient(), tmp_path))
     block = ToolResultBlock(tool_use_id="x", content=out.content)
@@ -528,7 +528,7 @@ async def test_visual_never_reaches_the_model(tmp_path) -> None:  # type: ignore
 def test_scale_sizes_the_bar_without_inventing_a_percentage() -> None:
     """`limit` means a real ceiling and shows a percentage. `scale` is only
     bar length --- a percentage there would be read as a fill level."""
-    from wai.core.visuals import Bar
+    from altus.core.visuals import Bar
 
     limited = Bar(label="cpu", value=500, limit=1000, unit="m").render()
     assert "500m / 1,000m" in limited and "50%" in limited
@@ -541,7 +541,7 @@ def test_scale_sizes_the_bar_without_inventing_a_percentage() -> None:
 
 def test_bar_labels_truncate_in_the_middle() -> None:
     """Elasticsearch PVCs share a long prefix; cutting the tail hides which is which."""
-    from wai.core.visuals import Bar
+    from altus.core.visuals import Bar
 
     a = Bar(label="sandbox/elasticsearch-data-esmain-es-esmain-0", value=1).render(label_width=30)
     b = Bar(label="sandbox/elasticsearch-data-esmain-es-esmain-1", value=1).render(label_width=30)
@@ -553,7 +553,7 @@ def test_bar_labels_truncate_in_the_middle() -> None:
 async def test_storage_does_not_claim_a_fill_level(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A bound PVC has requested == capacity, so charting one against the
     other shows every volume at 100% and reads as 'full'."""
-    from wai.core.visuals import Bars
+    from altus.core.visuals import Bars
 
     objects = {
         "PersistentVolumeClaim": [
@@ -828,7 +828,7 @@ MANIFEST: dict[str, Any] = {
 
 
 def approving(decision: Decision = Decision.ALLOW):  # type: ignore[no-untyped-def]
-    from wai.tools.approval import RecordingPolicy
+    from altus.tools.approval import RecordingPolicy
 
     return RecordingPolicy(decision=decision)
 
@@ -945,7 +945,7 @@ async def test_protected_context_is_flagged_on_the_request(tmp_path) -> None:  #
 
 
 async def test_deny_mode_refuses_outright(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.cloud.base import ProtectionMode
+    from altus.cloud.base import ProtectionMode
 
     class ProdClient(MutableClient):
         def __init__(self, **kw: Any) -> None:
@@ -1378,14 +1378,14 @@ async def test_wait_succeeds_when_the_condition_is_met(tmp_path) -> None:  # typ
 async def test_wait_for_deletion_reads_absence_from_the_transitions() -> None:
     """No state of an object means `gone`, so deletion is read from the event
     stream rather than from a predicate."""
-    from wai.tools.k8s.reads import _predicate
+    from altus.tools.k8s.reads import _predicate
 
     ready = _predicate(deleted=True, condition="", want="", field="", value="")
     assert ready({"status": {"phase": "Running"}}) is False
 
 
 def test_condition_and_field_predicates() -> None:
-    from wai.tools.k8s.reads import _condition_met, _field_equals
+    from altus.tools.k8s.reads import _condition_met, _field_equals
 
     obj = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
     assert _condition_met(obj, "Ready", "True")
@@ -1678,7 +1678,7 @@ async def test_switching_context_refuses_an_unknown_name(tmp_path, monkeypatch) 
 async def test_switching_context_drops_the_cached_client() -> None:
     """The cached client holds a connection built for the old context; reusing
     it would send the next call to the cluster you just left."""
-    from wai.cloud.k8s import K8sProvider
+    from altus.cloud.k8s import K8sProvider
 
     provider = K8sProvider(context="AKS_QAM")
     provider._client = object()  # type: ignore[assignment]
@@ -1949,7 +1949,7 @@ async def test_exec_passes_argv_through_untouched(tmp_path) -> None:  # type: ig
     await tool("k8s_exec").run(
         {"pod": "web-1", "command": hostile}, mutation_context(client, tmp_path, approving())
     )
-    assert client.execs[0][1] == hostile, "WAI neither splits nor rewrites the command"
+    assert client.execs[0][1] == hostile, "Altus neither splits nor rewrites the command"
 
 
 async def test_exec_redacts_what_the_command_printed(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -2044,7 +2044,7 @@ async def test_cp_quotes_the_remote_path_rather_than_interpolating(tmp_path) -> 
 
 async def test_port_forward_binds_loopback_only_and_is_session_scoped() -> None:
     """A tunnel that outlives its session is a hole nobody remembers opening."""
-    from wai.tools.k8s.streams import PortForwards
+    from altus.tools.k8s.streams import PortForwards
 
     closed: list[str] = []
 
@@ -2067,7 +2067,7 @@ async def test_port_forward_binds_loopback_only_and_is_session_scoped() -> None:
 
 
 async def test_port_forward_rejects_an_impossible_port(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from wai.tools.k8s.streams import PortForwards
+    from altus.tools.k8s.streams import PortForwards
 
     policy = approving()
     ctx = mutation_context(ExecClient(), tmp_path, policy)
@@ -2087,7 +2087,7 @@ def test_a_tool_declares_the_subresource_its_classification_depends_on(name: str
     implies --- and for all three of these that verb is `get`, so each would
     classify as an ordinary read with a standing grant on offer.
     """
-    from wai.cloud.kube import classify
+    from altus.cloud.kube import classify
 
     entry = tool(name)
     assert entry.subresource, f"{name} must declare its subresource"
@@ -2120,7 +2120,7 @@ async def test_the_privileged_guard_is_case_insensitive_like_classify(tmp_path, 
 def test_a_cluster_scoped_operation_has_no_namespace_in_its_target() -> None:
     """Folding it into "default" tested the protection rules against a
     namespace the operation was never touching."""
-    from wai.cloud.kube import KubeContext
+    from altus.cloud.kube import KubeContext
 
     context = KubeContext(name="AKS_QAM", namespace="shop")
     assert context.target().scope == "shop", "None still means this context's namespace"
